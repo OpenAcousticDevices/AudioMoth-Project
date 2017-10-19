@@ -11,6 +11,7 @@
 
 #include "em_acmp.h"
 #include "em_adc.h"
+#include "em_prs.h"
 #include "em_burtc.h"
 #include "em_chip.h"
 #include "em_cmu.h"
@@ -89,6 +90,7 @@ static void setupBackupRTC(void);
 static void setupBackupDomain(void);
 static void setupWatchdogTimer(void);
 static void setupOpAmp(uint32_t gain);
+static void enablePrsTimer(uint32_t samplerate);
 static bool batteryIsAboveVoltageThreshold(uint32_t vddLevelDivider);
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 
@@ -112,9 +114,12 @@ void AudioMoth_initialise() {
 
     CMU_ClockSelectSet(cmuClock_HF, cmuSelect_HFXO);
 
+    CMU_OscillatorEnable(cmuOsc_HFRCO, false, false);
+
     /* Enable clock to low energy modules */
 
     CMU_ClockEnable(cmuClock_GPIO, true);
+
     CMU_ClockEnable(cmuClock_CORELE, true);
 
     /* Store the cause of the last reset, and clear the reset cause register */
@@ -355,16 +360,16 @@ void TIMER1_IRQHandler(void) {
 
 }
 
-static void transferComplete(unsigned int channel, bool primary, void *user) {
+static void transferComplete(unsigned int channel, bool isPrimaryBuffer, void *user) {
 
     int16_t *nextBuffer = NULL;
 
-    AudioMoth_handleDirectMemoryAccessInterrupt(primary, &nextBuffer);
+    AudioMoth_handleDirectMemoryAccessInterrupt(isPrimaryBuffer, &nextBuffer);
 
     /* Re-activate the DMA */
 
     DMA_RefreshPingPong(channel,
-        primary,
+        isPrimaryBuffer,
         false,
         (void*)nextBuffer,
         NULL,
@@ -432,7 +437,9 @@ static void setupBackupRTC(void) {
 
 /* Functions to initialise the microphone */
 
-void AudioMoth_startMicrophoneSamples(void) {
+void AudioMoth_startMicrophoneSamples(uint32_t sampleRate) {
+
+	enablePrsTimer(sampleRate);
 
     /* Start the ADC samples */
 
@@ -456,11 +463,7 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
     numberOfSamplesPerTransfer = numberOfSamples;
 
-    if (numberOfSamplesPerTransfer > 1024) {
-
-        numberOfSamplesPerTransfer = 1024;
-
-    }
+    if (numberOfSamplesPerTransfer > 1024) numberOfSamplesPerTransfer = 1024;
 
     /* Start the clock */
 
@@ -507,7 +510,6 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
     DMA_CfgDescr(0, false, &descrCfg);
 
     /* Set up the first transfer */
-
     DMA_ActivatePingPong(0,
         false,
         (void*)primaryBuffer,
@@ -585,21 +587,13 @@ void AudioMoth_disableExternalSRAM(void) {
 
 uint32_t AudioMoth_calculateSampleRate(uint32_t frequency, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
 
-    if (acquisitionCycles != 16 && acquisitionCycles != 8 && acquisitionCycles != 4 && acquisitionCycles != 2) {
-        acquisitionCycles = 1;
-    }
+    if (acquisitionCycles != 16 && acquisitionCycles != 8 && acquisitionCycles != 4 && acquisitionCycles != 2)  acquisitionCycles = 1;
 
-    if (oversampleRate != 128 && oversampleRate != 64 && oversampleRate != 32 && oversampleRate != 16 && oversampleRate != 8 && oversampleRate != 4) {
-        oversampleRate = 2;
-    }
+    if (oversampleRate != 128 && oversampleRate != 64 && oversampleRate != 32 && oversampleRate != 16 && oversampleRate != 8 && oversampleRate != 4) oversampleRate = 2;
 
-    if (clockDivider > 128) {
-        clockDivider = 128;
-    }
+    if (clockDivider > 128) clockDivider = 128;
 
-    if (clockDivider < 1) {
-        clockDivider = 1;
-    }
+    if (clockDivider < 1)  clockDivider = 1;
 
     uint32_t numerator = frequency / clockDivider;
 
@@ -609,6 +603,25 @@ uint32_t AudioMoth_calculateSampleRate(uint32_t frequency, uint32_t clockDivider
 
 }
 
+static void enablePrsTimer(uint32_t sampleRate) {
+
+    CMU_ClockEnable(cmuClock_PRS, true);
+
+    CMU_ClockEnable(cmuClock_TIMER2, true);
+
+    /* Connect PRS channel 0 to TIMER overflow */
+
+    PRS_SourceSignalSet(0, PRS_CH_CTRL_SOURCESEL_TIMER2, PRS_CH_CTRL_SIGSEL_TIMER2OF, prsEdgeOff);
+
+    /* Configure TIMER to trigger on sampling rate */
+
+    TIMER_TopSet(TIMER2,  CMU_ClockFreqGet(cmuClock_TIMER2) / sampleRate - 1);
+
+    /* Enable Timer on ADC */
+
+    TIMER_Enable(TIMER2, true);
+
+}
 
 static void setupOpAmp(uint32_t gain) {
 
@@ -657,6 +670,10 @@ static void setupOpAmp(uint32_t gain) {
 
     OPAMP_Enable(DAC0, OPA2, &configuration2);
 
+    /* Disable the clock */
+
+    CMU_ClockEnable(cmuClock_DAC0, false);
+
 }
 
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
@@ -669,17 +686,17 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
     ADC_Init_TypeDef adcInit = ADC_INIT_DEFAULT;
 
-    adcInit.timebase = ADC_TimebaseCalc(0);
+    if (clockDivider < 1) clockDivider = 1;
 
-    if (clockDivider > 128) {
-        clockDivider = 128;
-    }
-
-    if (clockDivider < 1) {
-        clockDivider = 1;
-    }
+    if (clockDivider > 128) clockDivider = 128;
 
     adcInit.prescale = (clockDivider - 1);
+
+    adcInit.warmUpMode = adcWarmupKeepADCWarm;
+
+    adcInit.timebase = ADC_TimebaseCalc(0);
+
+    adcInit.lpfMode = adcLPFilterRC;
 
     if (oversampleRate == 128) {
         adcInit.ovsRateSel = adcOvsRateSel128;
@@ -699,15 +716,31 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
     ADC_Init(ADC0, &adcInit);
 
+    /* SCAN mode voltage reference must match the reference selected for SINGLE mode conversions */
+
+    ADC0->SCANCTRL = ADC_SCANCTRL_REF_2V5;
+
     /* Configure ADC single conversion structure */
 
     ADC_InitSingle_TypeDef adcInitSingle = ADC_INITSINGLE_DEFAULT;
 
-    adcInitSingle.reference = adcRefVDD;
-    adcInitSingle.resolution = adcResOVS;
+    adcInitSingle.prsSel = adcPRSSELCh0;
+    adcInitSingle.reference = adcRef2V5;
+
+    if (oversampleRate == 1) {
+
+    	adcInitSingle.resolution = adcRes12Bit;
+
+    } else {
+
+        adcInitSingle.resolution = adcResOVS;
+
+    }
+
     adcInitSingle.input = adcSingleInpCh0Ch1;
+    adcInitSingle.prsEnable = true;
     adcInitSingle.diff = true;
-    adcInitSingle.rep = true;
+    adcInitSingle.rep = false;
 
     if (acquisitionCycles == 16) {
         adcInitSingle.acqTime = adcAcqTime16;
@@ -731,17 +764,9 @@ void AudioMoth_delay(uint16_t milliseconds) {
 
     /* Ensure the delay period wont cause the counter to overflow and calculate clock ticks to wait */
 
-    if (milliseconds == 0) {
+    if (milliseconds == 0)  return;
 
-        return;
-
-    }
-
-    if (milliseconds > 1000) {
-
-        milliseconds = 1000;
-
-    }
+    if (milliseconds > 1000) milliseconds = 1000;
 
     /* Enable clock for TIMER1 */
 
