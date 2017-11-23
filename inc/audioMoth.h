@@ -61,7 +61,7 @@ void AudioMoth_disableExternalSRAM(void);
 
 /* Microphone samples */
 
-void AudioMoth_startMicrophoneSamples(void);
+void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 void AudioMoth_initialiseMicrophoneInterupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
 
