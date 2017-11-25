@@ -5,7 +5,9 @@ A minimal project on which all AudioMoth firmware can be built.
 
 When run, this implementation will flash an LED and handle USB interactions to enable communication with the [AudioMoth Timesetter app](https://github.com/OpenAcousticDevices/AudioMoth-TimeSetter).
 
-All custom firmware can be built from changes to ```src/main.c```.
+### Documentation ###
+
+See the [Wiki](https://github.com/OpenAcousticDevices/AudioMoth-Project/wiki/AudioMoth) for details.
 
 ### License ###
 
