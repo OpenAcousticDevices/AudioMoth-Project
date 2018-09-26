@@ -39,22 +39,25 @@
 
 #include "audioMoth.h"
 
+/*  Define oscillator constants */
+
+#define AM_LFXO_TICKS_PER_SECOND                  256
+#define AM_MINIMUM_POWER_DOWN_TIME                4
+
 /*  Define RTC backup register constants */
 
-#define AM_BURTC_COUNTER                          0
+#define AM_BURTC_TIME_OFFSET                      0
 #define AM_BURTC_CLOCK_SET_FLAG                   1
 #define AM_BURTC_WATCH_DOG_FLAG                   2
 #define AM_BURTC_INITIAL_POWER_UP_FLAG            3
 
 #define AM_BURTC_CANARY_VALUE                     0x11223344
+#define AM_BURTC_OVERFLOW_THRESHOLD               0x0100000000
 
 #define AM_BURTC_TOTAL_REGISTERS                  128
 #define AM_BURTC_RESERVED_REGISTERS               8
 
-/*  Define oscillator constants */
-
-#define AM_LFXO_TICKS_PER_SECOND                  256
-#define AM_MINIMUM_POWER_DOWN_TIME                4
+#define AM_BURTC_THRESHOLD_IN_SECONDS             (AM_BURTC_OVERFLOW_THRESHOLD / AM_LFXO_TICKS_PER_SECOND)
 
 /* Define USB message types and declare buffers */
 
@@ -66,6 +69,8 @@
 #define AM_USB_MSG_TYPE_GET_BATTERY               0x04
 #define AM_USB_MSG_TYPE_GET_APP_PACKET            0x05
 #define AM_USB_MSG_TYPE_SET_APP_PACKET            0x06
+#define AM_USB_MSG_TYPE_GET_FIRMWARE_VERSION      0x07
+#define AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION  0x08
 
 STATIC_UBUF(receiveBuffer, AM_USB_BUFFERSIZE);
 STATIC_UBUF(transmitBuffer, AM_USB_BUFFERSIZE);
@@ -148,13 +153,27 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, 0);
 
-        BURTC_RetRegSet(AM_BURTC_COUNTER, 0);
+        BURTC_RetRegSet(AM_BURTC_TIME_OFFSET, 0);
 
         /* Set the initial power up flag */
 
         BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  AM_BURTC_CANARY_VALUE);
 
     } else {
+
+        /* Reset the BURTC counter if overflow flag has been set*/
+
+        if (BURTC_IntGet() & BURTC_IF_OF) {
+
+            BURTC_IntClear(BURTC_IF_OF);
+
+            uint32_t offset = BURTC_RetRegGet(AM_BURTC_TIME_OFFSET);
+
+            BURTC_RetRegSet(AM_BURTC_TIME_OFFSET, offset + AM_BURTC_THRESHOLD_IN_SECONDS);
+
+            BURTC_IntEnable(BURTC_IF_OF);
+
+        }
 
         /* Clear the initial power up flag */
 
@@ -429,6 +448,11 @@ static void setupBackupRTC(void) {
 
     BURTC_Init(&burtcInit);
 
+    /* Enable interrupt on counter overflow */
+
+    BURTC_IntClear(BURTC_IF_OF);
+    BURTC_IntEnable(BURTC_IF_OF);
+
     /* Enable the timer */
 
     BURTC_Enable(true);
@@ -664,6 +688,7 @@ static void setupOpAmp(uint32_t gain) {
 
     }
 
+
     /* Enable OPA1 and OPA2 */
 
     OPAMP_Enable(DAC0, OPA1, &configuration1);
@@ -867,7 +892,7 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
     if (seconds == 0) {
 
-        BURTC_CompareSet(AM_BURTC_COUNTER, currentCounterValue + AM_MINIMUM_POWER_DOWN_TIME);
+        BURTC_CompareSet(0, currentCounterValue + AM_MINIMUM_POWER_DOWN_TIME);
 
     } else {
 
@@ -879,7 +904,7 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
         }
 
-        BURTC_CompareSet(AM_BURTC_COUNTER, counterValueToMatch + AM_MINIMUM_POWER_DOWN_TIME);
+        BURTC_CompareSet(0, counterValueToMatch + AM_MINIMUM_POWER_DOWN_TIME);
 
     }
 
@@ -956,6 +981,10 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
     uint32_t timeNow;
 
+    uint8_t *firmwareNumber;
+
+    uint8_t *firmwareDescription;
+
     AM_batteryState_t batteryState;
 
     switch(receivedMessageType) {
@@ -1000,6 +1029,7 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
             break;
 
+
         case AM_USB_MSG_TYPE_GET_APP_PACKET:
 
             /* Requests application specific packet from the device */
@@ -1013,6 +1043,38 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
             /* Provides the application specific packet */
 
             AudioMoth_usbApplicationPacketReceived(AM_USB_MSG_TYPE_SET_APP_PACKET, receiveBuffer, transmitBuffer, AM_USB_BUFFERSIZE);
+
+            break;
+
+        case AM_USB_MSG_TYPE_GET_FIRMWARE_VERSION:
+
+            /* Provides the application firmware version */
+
+            firmwareNumber = NULL;
+
+            AudioMoth_usbFirmwareVersionRequested(&firmwareNumber);
+
+            if (firmwareNumber != NULL) {
+
+                memcpy(transmitBuffer + 1, firmwareNumber, AM_FIRMWARE_VERSION_LENGTH);
+
+            }
+
+            break;
+
+        case AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION:
+
+            /* Provides the application firmware description */
+
+            firmwareDescription = NULL;
+
+            AudioMoth_usbFirmwareDescriptionRequested(&firmwareDescription);
+
+            if (firmwareDescription != NULL) {
+
+                memcpy(transmitBuffer + 1, firmwareDescription, AM_FIRMWARE_DESCRIPTION_LENGTH);
+
+            }
 
             break;
 
@@ -1216,13 +1278,15 @@ uint32_t AudioMoth_retreiveFromBackupDomain(uint32_t number) {
 
 void AudioMoth_setTime(uint32_t time) {
 
-    BURTC_RetRegSet(AM_BURTC_COUNTER, time);
+    uint32_t seconds = BURTC_CounterGet() / AM_LFXO_TICKS_PER_SECOND;
+
+    uint32_t offset = time - seconds;
+
+    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET, offset);
 
     BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, AM_BURTC_CANARY_VALUE);
 
     BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
-
-    BURTC_CounterReset();
 
 }
 
@@ -1234,7 +1298,9 @@ bool AudioMoth_hasTimeBeenSet(void) {
 
 uint32_t AudioMoth_getTime(void) {
 
-    return BURTC_RetRegGet(AM_BURTC_COUNTER) + BURTC_CounterGet() / AM_LFXO_TICKS_PER_SECOND;
+    uint32_t seconds = BURTC_CounterGet() / AM_LFXO_TICKS_PER_SECOND;
+
+    return BURTC_RetRegGet(AM_BURTC_TIME_OFFSET) + seconds;
 
 }
 
@@ -1280,7 +1346,12 @@ void AudioMoth_stopWatchdog(void) {
 
 DWORD get_fattime(void) {
 
-    time_t fatTime = AudioMoth_getTime();
+    int8_t timezone = 0;
+
+    AudioMoth_timezoneRequested(&timezone);
+
+    time_t fatTime = AudioMoth_getTime() + timezone * 60 * 60;
+
     struct tm timePtr;
     gmtime_r(&fatTime, &timePtr);
 
@@ -1354,7 +1425,7 @@ void AudioMoth_disableFileSystem(void) {
 
 bool AudioMoth_openFile(char *filename) {
 
-    /* Open a file for writing. Always overwrite an existing file with the same name */
+    /* Open a file for writing. Overwrite existing file with the same name */
 
     FRESULT res = f_open(&file, filename,  FA_CREATE_ALWAYS | FA_WRITE);
 
@@ -1368,7 +1439,7 @@ bool AudioMoth_openFile(char *filename) {
 
 bool AudioMoth_appendFile(char *filename) {
 
-    /* Open the file for writing. Append existing existing file with the same name */
+    /* Open the file for writing. Append existing file with the same name */
 
     FRESULT res = f_open(&file, filename,  FA_OPEN_ALWAYS | FA_WRITE);
 
@@ -1380,6 +1451,30 @@ bool AudioMoth_appendFile(char *filename) {
 
     if (res != FR_OK) {
         f_close(&file);
+        return false;
+    }
+
+    return true;
+
+}
+
+bool AudioMoth_openFileToRead(char *filename) {
+
+    FRESULT res = f_open(&file, filename,  FA_READ);
+
+    if (res != FR_OK) {
+        return false;
+    }
+
+    return true;
+
+}
+
+bool AudioMoth_readFile(char *filename, int16_t *buffer, uint32_t bufferSize) {
+
+    FRESULT res = f_read (&file, buffer, bufferSize, &bw);
+
+    if (res != FR_OK) {
         return false;
     }
 
@@ -1433,6 +1528,46 @@ bool AudioMoth_renameFile(char *originalFilename, char *newFilename) {
 
     return true;
 
+}
+
+bool AudioMoth_makeSDfolder(char *folderName) {
+
+    FRESULT res = f_mkdir(folderName);
+
+    if (res != FR_OK) {
+        return false;
+    }
+
+    return true;
+
+}
+
+bool AudioMoth_folderExists(char *folderName){
+
+    FRESULT res = f_stat(folderName, NULL);
+
+    if (res != FR_OK) {
+        return false;
+    }
+
+    return true;
+
+}
+
+/* Additional functions to handle long file names */
+
+WCHAR ff_convert (WCHAR wch, UINT dir){
+    return wch < 0x80 ? wch : 0;
+}
+
+WCHAR ff_wtoupper (WCHAR wch) {
+    if (wch < 0x80) {
+        if (wch >= 'a' && wch <= 'z') {
+            wch &= ~0x20;
+        }
+        return wch;
+    }
+    return 0;
 }
 
 /* Functions to enable and disable EBI */
@@ -1634,7 +1769,6 @@ static void setupGPIO(void) {
 	GPIO_PinModeSet(gpioPortD, 3, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 4, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 5, gpioModeDisabled, 0);
-	GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_EN_N, gpioModePushPull, 1);
 	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, 0);
 	GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModePushPull, 1);
@@ -1673,5 +1807,115 @@ static void setupGPIO(void) {
     /* Enable GPIO state retention in EM4 */
 
 	GPIO->CTRL = GPIO_CTRL_EM4RET;
+
+}
+
+/* Enable SWO output for debugging */
+
+int _write(int file, const char *ptr, int len) {
+
+    int x;
+
+    for (x = 0; x < len; x++) ITM_SendChar (*ptr++);
+
+    return (len);
+
+}
+
+void AudioMoth_setUpDebugOutput(void) {
+
+    /* Enable GPIO clock. */
+
+    CMU ->HFPERCLKEN0 |= CMU_HFPERCLKEN0_GPIO;
+
+    /* Enable Serial wire output pin */
+
+    GPIO ->ROUTE |= GPIO_ROUTE_SWOPEN;
+
+    /* Set location 0 */
+
+    GPIO ->ROUTE = (GPIO ->ROUTE & ~(_GPIO_ROUTE_SWLOCATION_MASK)) | GPIO_ROUTE_SWLOCATION_LOC0;
+
+    /* Enable output on pin - GPIO Port F, Pin 2 */
+
+    GPIO ->P[5].MODEL &= ~(_GPIO_P_MODEL_MODE2_MASK);
+    GPIO ->P[5].MODEL |= GPIO_P_MODEL_MODE2_PUSHPULL;
+
+    /* Enable debug clock AUXHFRCO */
+
+    CMU ->OSCENCMD = CMU_OSCENCMD_AUXHFRCOEN;
+
+    /* Wait until clock is ready */
+
+    while (!(CMU ->STATUS & CMU_STATUS_AUXHFRCORDY)) ;
+
+    /* Enable trace in core debug */
+
+    CoreDebug ->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+    ITM ->LAR = 0xC5ACCE55;
+    ITM ->TER = 0x0;
+    ITM ->TCR = 0x0;
+    TPI ->SPPR = 2;
+    TPI ->ACPR = 0xf;
+    ITM ->TPR = 0x0;
+    DWT ->CTRL = 0x400003FE;
+    ITM ->TCR = 0x0001000D;
+    TPI ->FFCR = 0x00000100;
+    ITM ->TER = 0x1;
+
+}
+
+void AudioMoth_setupSWOForPrint(void) {
+
+  /* Enable GPIO clock. */
+
+  CMU->HFPERCLKEN0 |= CMU_HFPERCLKEN0_GPIO;
+
+  /* Enable Serial wire output pin */
+
+  GPIO->ROUTE |= GPIO_ROUTE_SWOPEN;
+
+  /* Set location 0 */
+
+  GPIO->ROUTE = (GPIO->ROUTE & ~(_GPIO_ROUTE_SWLOCATION_MASK)) | GPIO_ROUTE_SWLOCATION_LOC0;
+
+  /* Enable output on pin - GPIO Port F, Pin 2 */
+
+  GPIO->P[5].MODEL &= ~(_GPIO_P_MODEL_MODE2_MASK);
+
+  GPIO->P[5].MODEL |= GPIO_P_MODEL_MODE2_PUSHPULL;
+
+  /* Enable debug clock AUXHFRCO */
+
+  CMU->OSCENCMD = CMU_OSCENCMD_AUXHFRCOEN;
+
+  /* Wait until clock is ready */
+
+  while (!(CMU->STATUS & CMU_STATUS_AUXHFRCORDY));
+
+  /* Enable trace in core debug */
+
+  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+
+  ITM->LAR  = 0xC5ACCE55;
+
+  ITM->TER  = 0x0;
+
+  ITM->TCR  = 0x0;
+
+  TPI->SPPR = 2;
+
+  TPI->ACPR = 0xf;
+
+  ITM->TPR  = 0x0;
+
+  DWT->CTRL = 0x400003FE;
+
+  ITM->TCR  = 0x0001000D;
+
+  TPI->FFCR = 0x00000100;
+
+  ITM->TER  = 0x1;
 
 }

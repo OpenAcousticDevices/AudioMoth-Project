@@ -231,11 +231,6 @@
 			<locationURI>STUDIO_SDK_LOC/util/third_party/fatfs/src/diskio.c</locationURI>
 		</link>
 		<link>
-			<name>fatfs/ff.c</name>
-			<type>1</type>
-			<locationURI>STUDIO_SDK_LOC/util/third_party/fatfs/src/ff.c</locationURI>
-		</link>
-		<link>
 			<name>usb/em_usbd.c</name>
 			<type>1</type>
 			<locationURI>STUDIO_SDK_LOC/platform/middleware/usb_gecko/src/em_usbd.c</locationURI>

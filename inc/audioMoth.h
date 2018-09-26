@@ -7,6 +7,9 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+#define AM_FIRMWARE_VERSION_LENGTH             3
+#define AM_FIRMWARE_DESCRIPTION_LENGTH         32
+
 #define AM_EXTERNAL_SRAM_START_ADDRESS         0x80000000
 #define AM_EXTERNAL_SRAM_SIZE_IN_BYTES         (256 * 1024)
 
@@ -24,20 +27,27 @@ typedef enum {AM_HFRCO_1MHZ, AM_HFRCO_7MHZ, AM_HFRCO_11MHZ, AM_HFRCO_14MHZ, AM_H
 
 typedef enum {AM_BATTERY_LOW, AM_BATTERY_3V6, AM_BATTERY_3V7, AM_BATTERY_3V8, AM_BATTERY_3V9, AM_BATTERY_4V0, AM_BATTERY_4V1, AM_BATTERY_4V2, AM_BATTERY_4V3, AM_BATTERY_4V4, AM_BATTERY_4V5, AM_BATTERY_4V6, AM_BATTERY_4V7, AM_BATTERY_4V8, AM_BATTERY_4V9, AM_BATTERY_FULL } AM_batteryState_t;
 
+/* Time zone handler */
+
+extern void AudioMoth_timezoneRequested(int8_t *timezone);
+
 /* Interrupt handlers */
 
 extern void AudioMoth_handleSwitchInterrupt(void);
 extern void AudioMoth_handleMicrophoneInterrupt(int16_t sample);
-extern void AudioMoth_handleDirectMemoryAccessInterrupt(bool primaryChannel, int16_t **nextBuffer);
+extern void AudioMoth_handleDirectMemoryAccessInterrupt(bool isPrimaryBuffer, int16_t **nextBuffer);
 
 /* USB message handlers */
 
+extern void AudioMoth_usbFirmwareVersionRequested(uint8_t **firmwareVersionPtr);
+extern void AudioMoth_usbFirmwareDescriptionRequested(uint8_t **firmwareDescriptionPtr);
 extern void AudioMoth_usbApplicationPacketRequested(uint32_t messageType, uint8_t *transmitBuffer, uint32_t size);
 extern void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t *receiveBuffer, uint8_t *transmitBuffer, uint32_t size);
 
 /* Initialise device */
 
 void AudioMoth_initialise(void);
+void AudioMoth_setUpDebugOutput(void);
 bool AudioMoth_isInitialPowerUp(void);
 
 /* Clock control */
@@ -62,6 +72,7 @@ void AudioMoth_disableExternalSRAM(void);
 /* Microphone samples */
 
 void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
+
 void AudioMoth_initialiseMicrophoneInterupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
 
@@ -97,6 +108,10 @@ bool AudioMoth_hasWatchdogResetOccured(void);
 
 AM_batteryState_t AudioMoth_getBatteryState();
 
+/* Firmware version */
+
+uint8_t * AudioMoth_getFirmwareVersion();
+
 /* Switch position monitoring */
 
 AM_switchPosition_t AudioMoth_getSwitchPosition();
@@ -123,10 +138,15 @@ bool AudioMoth_enableFileSystem();
 void AudioMoth_disableFileSystem();
 
 bool AudioMoth_openFile(char *filename);
+bool AudioMoth_openFileToRead(char *filename);
+bool AudioMoth_readFile(char *filename, int16_t *buffer, uint32_t bufferSize);
 bool AudioMoth_appendFile(char *filename);
 
 bool AudioMoth_seekInFile(uint32_t position);
 bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite);
+
+bool AudioMoth_makeSDfolder(char *folderName);
+bool AudioMoth_folderExists(char *folderName);
 
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename);
 

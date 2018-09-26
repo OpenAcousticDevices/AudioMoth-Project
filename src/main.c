@@ -14,6 +14,10 @@ static uint8_t firmwareVersion[AM_FIRMWARE_VERSION_LENGTH] = {1, 0, 0};
 
 static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "Example-Firmware";
 
+/* Required time zone handler */
+
+void AudioMoth_timezoneRequested(int8_t *timezone) { }
+
 /* Required interrupt handles */
 
 void AudioMoth_handleSwitchInterrupt(void) { }
