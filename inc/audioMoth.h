@@ -114,10 +114,6 @@ bool AudioMoth_isBatteryMonitorAboveThreshold(void);
 
 AM_batteryState_t AudioMoth_getBatteryState();
 
-/* Firmware version */
-
-uint8_t * AudioMoth_getFirmwareVersion();
-
 /* Switch position monitoring */
 
 AM_switchPosition_t AudioMoth_getSwitchPosition();
