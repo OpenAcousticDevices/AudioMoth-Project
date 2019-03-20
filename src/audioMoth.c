@@ -39,25 +39,33 @@
 
 #include "audioMoth.h"
 
+/*  Useful macros */
+
+#define MIN(a, b)                                 ((a) < (b) ? (a) : (b))
+#define MAX(a, b)                                 ((a) > (b) ? (a) : (b))
+
 /*  Define oscillator constants */
 
-#define AM_LFXO_TICKS_PER_SECOND                  256
-#define AM_MINIMUM_POWER_DOWN_TIME                4
+#define MILLISECONDS_IN_SECOND                    1000
+#define AM_LFXO_TICKS_PER_SECOND                  1024
+#define AM_MINIMUM_POWER_DOWN_TIME                16
+
+/* Define battery monitor constant */
+
+#define BASE_BATTERY_MONITOR_THRESHOLD            34
 
 /*  Define RTC backup register constants */
 
-#define AM_BURTC_TIME_OFFSET                      0
-#define AM_BURTC_CLOCK_SET_FLAG                   1
-#define AM_BURTC_WATCH_DOG_FLAG                   2
-#define AM_BURTC_INITIAL_POWER_UP_FLAG            3
+#define AM_BURTC_TIME_OFFSET_LOW                  0
+#define AM_BURTC_TIME_OFFSET_HIGH                 1
+#define AM_BURTC_CLOCK_SET_FLAG                   2
+#define AM_BURTC_WATCH_DOG_FLAG                   3
+#define AM_BURTC_INITIAL_POWER_UP_FLAG            4
 
 #define AM_BURTC_CANARY_VALUE                     0x11223344
-#define AM_BURTC_OVERFLOW_THRESHOLD               0x0100000000
 
 #define AM_BURTC_TOTAL_REGISTERS                  128
 #define AM_BURTC_RESERVED_REGISTERS               8
-
-#define AM_BURTC_THRESHOLD_IN_SECONDS             (AM_BURTC_OVERFLOW_THRESHOLD / AM_LFXO_TICKS_PER_SECOND)
 
 /* Define USB message types and declare buffers */
 
@@ -86,6 +94,10 @@ static UINT bw;
 static DMA_CB_TypeDef cb;
 static uint16_t numberOfSamplesPerTransfer;
 
+/* Delay timer variable */
+
+static volatile bool delayTimmerRunning;
+
 /* Function prototypes */
 
 static void setupGPIO(void);
@@ -95,8 +107,8 @@ static void setupBackupRTC(void);
 static void setupBackupDomain(void);
 static void setupWatchdogTimer(void);
 static void setupOpAmp(uint32_t gain);
+static void handleOverflowOfBURTC(void);
 static void enablePrsTimer(uint32_t samplerate);
-static bool batteryIsAboveVoltageThreshold(uint32_t vddLevelDivider);
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 
 /* Function to initialise the main components */
@@ -153,7 +165,9 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, 0);
 
-        BURTC_RetRegSet(AM_BURTC_TIME_OFFSET, 0);
+        BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_LOW, 0);
+
+        BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, 0);
 
         /* Set the initial power up flag */
 
@@ -161,17 +175,11 @@ void AudioMoth_initialise() {
 
     } else {
 
-        /* Reset the BURTC counter if overflow flag has been set*/
+        /* Increment the high 32-bit BURTC offset value if the overflow flag has been set*/
 
         if (BURTC_IntGet() & BURTC_IF_OF) {
 
-            BURTC_IntClear(BURTC_IF_OF);
-
-            uint32_t offset = BURTC_RetRegGet(AM_BURTC_TIME_OFFSET);
-
-            BURTC_RetRegSet(AM_BURTC_TIME_OFFSET, offset + AM_BURTC_THRESHOLD_IN_SECONDS);
-
-            BURTC_IntEnable(BURTC_IF_OF);
+            handleOverflowOfBURTC();
 
         }
 
@@ -310,8 +318,6 @@ void AudioMoth_calibrateHFRCO(uint32_t frequency) {
 
         CMU_OscillatorTuningSet(cmuOsc_HFRCO, mid);
 
-
-
     }
 
 }
@@ -377,6 +383,11 @@ void TIMER1_IRQHandler(void) {
 
   TIMER_IntClear(TIMER1, TIMER_IF_OF);
 
+  /* Reset the flag */
+
+  delayTimmerRunning = false;
+
+
 }
 
 static void transferComplete(unsigned int channel, bool isPrimaryBuffer, void *user) {
@@ -440,7 +451,7 @@ static void setupBackupRTC(void) {
 
     burtcInit.mode = burtcModeEM4;
     burtcInit.clkSel = burtcClkSelLFXO;
-    burtcInit.clkDiv = burtcClkDiv_128;
+    burtcInit.clkDiv = burtcClkDiv_32;
     burtcInit.timeStamp = false;
     burtcInit.compare0Top = false;
     burtcInit.enable = false;
@@ -783,7 +794,7 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
 }
 
-/* Function to implement a busy delay */
+/* Function to implement a sleeping delay */
 
 void AudioMoth_delay(uint16_t milliseconds) {
 
@@ -797,12 +808,13 @@ void AudioMoth_delay(uint16_t milliseconds) {
 
     CMU_ClockEnable(cmuClock_TIMER1, true);
 
-    /* Initialise and start TIMER1 */
+    /* Initialise TIMER1 */
 
     TIMER_Init_TypeDef delayInit = TIMER_INIT_DEFAULT;
 
-    delayInit.enable = false;
     delayInit.prescale = timerPrescale1024;
+
+    delayInit.enable = false;
 
     TIMER_Init(TIMER1, &delayInit);
 
@@ -814,17 +826,19 @@ void AudioMoth_delay(uint16_t milliseconds) {
 
     NVIC_EnableIRQ(TIMER1_IRQn);
 
-    /* Start timer and wait until counter value is over the threshold */
+    /* Start timer and wait until interrupt occurs */
+
+    delayTimmerRunning = true;
 
     uint32_t clockTicksToWait = (CMU_ClockFreqGet(cmuClock_HF) >> timerPrescale1024) * milliseconds / 1000;
 
     TIMER_TopSet(TIMER1, clockTicksToWait);
 
-    TIMER_CounterSet(TIMER1, 1);
+    TIMER_CounterSet(TIMER1, 0);
 
     TIMER_Enable(TIMER1, true);
 
-    while (TIMER_CounterGet(TIMER1) > 0) {
+    while (delayTimmerRunning) {
 
         EMU_EnterEM1();
 
@@ -856,7 +870,7 @@ void AudioMoth_powerDown() {
 
     setupGPIO();
 
-    /* Disable watchdog timer */
+    /* Disable watch dog timer */
 
     WDOG_Enable(false);
 
@@ -900,11 +914,13 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
         if (synchronised) {
 
-            counterValueToMatch -= counterValueToMatch & (AM_LFXO_TICKS_PER_SECOND - 1);
+            counterValueToMatch -= counterValueToMatch % AM_LFXO_TICKS_PER_SECOND;
+
+            counterValueToMatch = MAX(counterValueToMatch, currentCounterValue + AM_MINIMUM_POWER_DOWN_TIME);
 
         }
 
-        BURTC_CompareSet(0, counterValueToMatch + AM_MINIMUM_POWER_DOWN_TIME);
+        BURTC_CompareSet(0, counterValueToMatch);
 
     }
 
@@ -922,7 +938,7 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
 /* Callback which provides the HID specific descriptors */
 
-int setupCmd( const USB_Setup_TypeDef *setup ) {
+int setupCmd(const USB_Setup_TypeDef *setup) {
 
     int retVal = USB_STATUS_REQ_UNHANDLED;
 
@@ -993,7 +1009,7 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
             /* Requests the current time from the device */
 
-            timeNow = AudioMoth_getTime();
+            AudioMoth_getTime(&timeNow, NULL);
 
             memcpy(transmitBuffer + 1, &timeNow, 4);
 
@@ -1007,7 +1023,7 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
             memcpy(transmitBuffer + 1, &timeNow, 4);
 
-            AudioMoth_setTime(timeNow);
+            AudioMoth_setTime(timeNow, 0);
 
             break;
 
@@ -1146,61 +1162,27 @@ void AudioMoth_handleUSB(void) {
 
 }
 
-/* Function to get the battery power */
+/* Functions to handle the battery monitor */
 
-AM_batteryState_t AudioMoth_getBatteryState() {
+void AudioMoth_enableBatteryMonitor() {
 
-    AM_batteryState_t batteryState = AM_BATTERY_LOW;
-
-	/* Initialise max and min voltage levels */
-
-	uint32_t minBatteryThreshold = 34;                  // 3V3 * 2 * 34 / 63 = 3.6V
-
-    uint32_t maxBatteryThreshold = 48;                  // 3V3 * 2 * 48 / 63 = 5.0V
-
-	/* Turn battery monitor on */
+    /* Turn battery monitor on */
 
     GPIO_PinOutSet(BAT_MON_GPIOPORT, BAT_MON_EN);
 
-	/* Enable comparator clock */
+    /* Enable comparator clock */
 
-	CMU_ClockEnable(cmuClock_ACMP0, true);
-
-	for (uint32_t threshold = minBatteryThreshold; threshold <= maxBatteryThreshold; threshold += 1) {
-
-		if (batteryIsAboveVoltageThreshold(threshold)) {
-
-		    batteryState += 1;
-
-		} else {
-
-		    break;
-
-		}
-
-	}
-
-	/* Turn Battery Monitor off*/
-
-    GPIO_PinOutClear(BAT_MON_GPIOPORT, BAT_MON_EN);
-
-	/* Disable comparator clock*/
-
-	CMU_ClockEnable(cmuClock_ACMP0, false);
-
-	return batteryState;
+    CMU_ClockEnable(cmuClock_ACMP0, true);
 
 }
 
-static bool batteryIsAboveVoltageThreshold(uint32_t threshold) {
+void AudioMoth_setBatteryMonitorThreshold(AM_batteryState_t batteryState) {
 
-    bool aboveVoltageThreshold = false;
-
-    /* Initialise and initialise the ACMP */
+    /* Initialise the ACMP */
 
     ACMP_Init_TypeDef acmp_init = ACMP_INIT_DEFAULT;
 
-    acmp_init.vddLevel = threshold;
+    acmp_init.vddLevel = BASE_BATTERY_MONITOR_THRESHOLD + batteryState;
 
     acmp_init.hysteresisLevel = acmpHysteresisLevel2;
 
@@ -1212,17 +1194,55 @@ static bool batteryIsAboveVoltageThreshold(uint32_t threshold) {
 
     /* Wait for warm up */
 
-    while (!(ACMP0->STATUS & ACMP_STATUS_ACMPACT));
+    while (!(ACMP0->STATUS & ACMP_STATUS_ACMPACT)) {};
 
-    if (ACMP0->STATUS & ACMP_STATUS_ACMPOUT) {
+}
 
-        aboveVoltageThreshold = true;
+bool AudioMoth_isBatteryMonitorAboveThreshold() {
 
-    }
+    return (ACMP0->STATUS & ACMP_STATUS_ACMPOUT);
+
+}
+
+void AudioMoth_disableBatteryMonitor() {
+
+    /* Disable ACMP */
 
     ACMP_Disable(ACMP0);
 
-    return aboveVoltageThreshold;
+    /* Disable comparator clock*/
+
+    CMU_ClockEnable(cmuClock_ACMP0, false);
+
+    /* Turn Battery Monitor off*/
+
+    GPIO_PinOutClear(BAT_MON_GPIOPORT, BAT_MON_EN);
+
+}
+
+AM_batteryState_t AudioMoth_getBatteryState() {
+
+    AudioMoth_enableBatteryMonitor();
+
+    AM_batteryState_t batteryState = AM_BATTERY_LOW;
+
+    while (batteryState < AM_BATTERY_FULL) {
+
+        AudioMoth_setBatteryMonitorThreshold(batteryState);
+
+		if (!AudioMoth_isBatteryMonitorAboveThreshold()) {
+
+		    break;
+
+		}
+
+		batteryState += 1;
+
+	}
+
+    AudioMoth_disableBatteryMonitor();
+
+	return batteryState;
 
 }
 
@@ -1276,13 +1296,35 @@ uint32_t AudioMoth_retreiveFromBackupDomain(uint32_t number) {
 
 /* Functions to handle setting and querying of time */
 
-void AudioMoth_setTime(uint32_t time) {
+bool AudioMoth_hasTimeBeenSet(void) {
 
-    uint32_t seconds = BURTC_CounterGet() / AM_LFXO_TICKS_PER_SECOND;
+    return BURTC_RetRegGet(AM_BURTC_CLOCK_SET_FLAG) == AM_BURTC_CANARY_VALUE;
 
-    uint32_t offset = time - seconds;
+}
 
-    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET, offset);
+static void handleOverflowOfBURTC() {
+
+    BURTC_IntClear(BURTC_IF_OF);
+
+    uint32_t offsetHigh = BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH);
+
+    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, offsetHigh + 1);
+
+    BURTC_IntEnable(BURTC_IF_OF);
+
+}
+
+static void setTime(uint32_t time, uint16_t milliseconds) {
+
+    uint32_t ticks = (AM_LFXO_TICKS_PER_SECOND * (uint32_t)milliseconds) / MILLISECONDS_IN_SECOND;
+
+    uint64_t intendedCounter = AM_LFXO_TICKS_PER_SECOND * (uint64_t)time + ticks;
+
+    uint64_t offset = intendedCounter - (uint64_t)BURTC_CounterGet();
+
+    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, (uint32_t)(offset >> 32));
+
+    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_LOW, (uint32_t)(offset & 0xFFFFFFFF));
 
     BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, AM_BURTC_CANARY_VALUE);
 
@@ -1290,17 +1332,55 @@ void AudioMoth_setTime(uint32_t time) {
 
 }
 
-bool AudioMoth_hasTimeBeenSet(void) {
+static void getTime(uint32_t *time, uint16_t *milliseconds) {
 
-    return BURTC_RetRegGet(AM_BURTC_CLOCK_SET_FLAG) == AM_BURTC_CANARY_VALUE;
+    uint64_t offset =  (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH) << 32;
+
+    offset += (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_LOW);
+
+    uint64_t currentCounter = offset + BURTC_CounterGet();
+
+    if (time != NULL) {
+
+        *time = currentCounter / AM_LFXO_TICKS_PER_SECOND;
+
+    }
+
+    if (milliseconds != NULL) {
+
+        uint32_t ticks = currentCounter % AM_LFXO_TICKS_PER_SECOND;
+
+        *milliseconds = (uint16_t)(MILLISECONDS_IN_SECOND * ticks / AM_LFXO_TICKS_PER_SECOND);
+
+    }
 
 }
 
-uint32_t AudioMoth_getTime(void) {
+void AudioMoth_setTime(uint32_t time, uint16_t milliseconds) {
 
-    uint32_t seconds = BURTC_CounterGet() / AM_LFXO_TICKS_PER_SECOND;
+    setTime(time, milliseconds);
 
-    return BURTC_RetRegGet(AM_BURTC_TIME_OFFSET) + seconds;
+    if (BURTC_IntGet() & BURTC_IF_OF) {
+
+        handleOverflowOfBURTC();
+
+        setTime(time, milliseconds);
+
+    }
+
+}
+
+void AudioMoth_getTime(uint32_t *time, uint16_t *milliseconds) {
+
+    getTime(time, milliseconds);
+
+    if (BURTC_IntGet() & BURTC_IF_OF) {
+
+        handleOverflowOfBURTC();
+
+        getTime(time, milliseconds);
+
+    }
 
 }
 
@@ -1350,7 +1430,11 @@ DWORD get_fattime(void) {
 
     AudioMoth_timezoneRequested(&timezone);
 
-    time_t fatTime = AudioMoth_getTime() + timezone * 60 * 60;
+    uint32_t currentTime;
+
+    AudioMoth_getTime(&currentTime, NULL);
+
+    time_t fatTime = currentTime + timezone * 60 * 60;
 
     struct tm timePtr;
     gmtime_r(&fatTime, &timePtr);
@@ -1810,7 +1894,7 @@ static void setupGPIO(void) {
 
 }
 
-/* Enable SWO output for debugging output */
+/* Enable SWO output for debugging */
 
 int _write(int file, const char *ptr, int len) {
 

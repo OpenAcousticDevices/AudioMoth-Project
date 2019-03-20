@@ -92,9 +92,9 @@ void AudioMoth_storeInBackupDomain(uint32_t register, uint32_t value);
 
 /* Time */
 
-uint32_t AudioMoth_getTime(void);
 bool AudioMoth_hasTimeBeenSet(void);
-void AudioMoth_setTime(uint32_t time);
+void AudioMoth_setTime(uint32_t time, uint16_t milliseconds);
+void AudioMoth_getTime(uint32_t *time, uint16_t *milliseconds);
 
 /* Watch dog timer */
 
@@ -105,6 +105,12 @@ void AudioMoth_feedWatchdog(void);
 bool AudioMoth_hasWatchdogResetOccured(void);
 
 /* Battery state monitoring */
+
+void AudioMoth_enableBatteryMonitor(void);
+void AudioMoth_disableBatteryMonitor(void);
+
+void AudioMoth_setBatteryMonitorThreshold(AM_batteryState_t batteryState);
+bool AudioMoth_isBatteryMonitorAboveThreshold(void);
 
 AM_batteryState_t AudioMoth_getBatteryState();
 
@@ -151,3 +157,8 @@ bool AudioMoth_folderExists(char *folderName);
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename);
 
 bool AudioMoth_closeFile();
+
+/* Debugging */
+
+void AudioMoth_setupSWOForPrint(void);
+
