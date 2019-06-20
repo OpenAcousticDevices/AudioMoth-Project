@@ -147,7 +147,7 @@ void AudioMoth_initialise() {
 
     /* If this is a start from power-off initialise low frequency oscillator and set up BURTC */
 
-    if ((resetCause & RMU_RSTCAUSE_EM4WURST) == 0) {
+    if (resetCause & RMU_RSTCAUSE_PORST) {
 
         /* Start LFXO and wait until it is stable */
 
@@ -173,9 +173,13 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  AM_BURTC_CANARY_VALUE);
 
+        /* Clear the watch dog power up flag */
+
+        BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
+
     } else {
 
-        /* Increment the high 32-bit BURTC offset value if the overflow flag has been set*/
+        /* Reset the BURTC counter if overflow flag has been set */
 
         if (BURTC_IntGet() & BURTC_IF_OF) {
 
@@ -187,16 +191,20 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  0);
 
+        /* Record whether a watch dog timer reset has occurred */
+
+        if (resetCause & RMU_RSTCAUSE_WDOGRST) {
+
+            BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, AM_BURTC_CANARY_VALUE);
+
+        } else {
+
+            BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
+
+        }
+
     }
-
-    /* Record that a watch dog timer reset has occurred */
-
-    if (resetCause & RMU_RSTCAUSE_WDOGRST) {
-
-        BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, AM_BURTC_CANARY_VALUE);
-
-    }
-
+	
     /* Put GPIO pins in correct state */
 
     setupGPIO();
