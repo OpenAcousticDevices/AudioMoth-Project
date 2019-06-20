@@ -141,7 +141,7 @@ void AudioMoth_disableFileSystem();
 
 bool AudioMoth_openFile(char *filename);
 bool AudioMoth_openFileToRead(char *filename);
-bool AudioMoth_readFile(char *filename, int16_t *buffer, uint32_t bufferSize);
+bool AudioMoth_readFile(char *buffer, uint32_t bufferSize);
 bool AudioMoth_appendFile(char *filename);
 
 bool AudioMoth_seekInFile(uint32_t position);
