@@ -1554,7 +1554,7 @@ bool AudioMoth_openFileToRead(char *filename) {
 
 }
 
-bool AudioMoth_readFile(char *filename, int16_t *buffer, uint32_t bufferSize) {
+bool AudioMoth_readFile(char *buffer, uint32_t bufferSize) {
 
     FRESULT res = f_read (&file, buffer, bufferSize, &bw);
 
