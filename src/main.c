@@ -16,7 +16,7 @@ static uint8_t firmwareDescription[AM_FIRMWARE_DESCRIPTION_LENGTH] = "Example-Fi
 
 /* Required time zone handler */
 
-void AudioMoth_timezoneRequested(int8_t *timezone) { }
+void AudioMoth_timezoneRequested(int8_t *timezoneHours, int8_t *timezoneMinutes) { }
 
 /* Required interrupt handles */
 

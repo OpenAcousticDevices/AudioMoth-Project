@@ -1,7 +1,7 @@
 /****************************************************************************
  * audioMoth.h
  * openacousticdevices.info
- * March 2019
+ * June 2017
  *****************************************************************************/
 
 #include <stdint.h>
@@ -29,7 +29,7 @@ typedef enum {AM_BATTERY_LOW, AM_BATTERY_3V6, AM_BATTERY_3V7, AM_BATTERY_3V8, AM
 
 /* Time zone handler */
 
-extern void AudioMoth_timezoneRequested(int8_t *timezone);
+extern void AudioMoth_timezoneRequested(int8_t *timezoneHours, int8_t *timezoneMinutes);
 
 /* Interrupt handlers */
 
@@ -157,4 +157,3 @@ bool AudioMoth_closeFile();
 /* Debugging */
 
 void AudioMoth_setupSWOForPrint(void);
-

@@ -1,39 +1,10 @@
-/*-------------------------------------------*/
-/* Integer type definitions for FatFs module */
-/*-------------------------------------------*/
+/*
+ *
+ * The size definitions for Fats have now moved into ff.h.
+ * This file to maintain backwards compatibility with
+ * the Silicon Labs microsd.c driver code that expects to find
+ * them defined in integer.h.
+ *
+ */
 
-#ifndef _INTEGER
-#define _INTEGER
-
-#ifdef _WIN32	/* FatFs development platform */
-
-#include <windows.h>
-#include <tchar.h>
-
-#else			/* Embedded platform */
-
-#include "stdint.h"
-
-/* These types must be 16-bit, 32-bit or larger integer */
-typedef int16_t 	INT;
-typedef uint16_t	UINT;
-
-/* These types must be 8-bit integer */
-typedef int8_t		CHAR;
-typedef uint8_t	        UCHAR;
-typedef uint8_t	        BYTE;
-
-/* These types must be 16-bit integer */
-typedef int16_t		SHORT;
-typedef uint16_t	USHORT;
-typedef uint16_t	WORD;
-typedef uint16_t	WCHAR;
-
-/* These types must be 32-bit integer */
-typedef int32_t		LONG;
-typedef uint32_t	ULONG;
-typedef uint32_t	DWORD;
-
-#endif
-
-#endif
+#include "ff.h"

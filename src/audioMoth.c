@@ -9,23 +9,23 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "em_acmp.h"
+#include "em_rtc.h"
 #include "em_adc.h"
 #include "em_prs.h"
-#include "em_burtc.h"
-#include "em_chip.h"
 #include "em_cmu.h"
-#include "em_device.h"
 #include "em_dma.h"
 #include "em_ebi.h"
 #include "em_emu.h"
-#include "em_gpio.h"
-#include "em_opamp.h"
 #include "em_rmu.h"
+#include "em_usb.h"
+#include "em_chip.h"
+#include "em_acmp.h"
+#include "em_wdog.h"
+#include "em_gpio.h"
+#include "em_burtc.h"
 #include "em_timer.h"
 #include "em_usart.h"
-#include "em_usb.h"
-#include "em_wdog.h"
+#include "em_opamp.h"
 
 #include "ff.h"
 #include "diskio.h"
@@ -44,10 +44,11 @@
 #define MIN(a, b)                                 ((a) < (b) ? (a) : (b))
 #define MAX(a, b)                                 ((a) > (b) ? (a) : (b))
 
-/*  Define oscillator constants */
+/* Define time constants */
 
 #define MILLISECONDS_IN_SECOND                    1000
-#define AM_LFXO_TICKS_PER_SECOND                  1024
+#define AM_LFXO_TICKS_PER_SECOND                  32768
+#define AM_BURTC_TICKS_PER_SECOND                 1024
 #define AM_MINIMUM_POWER_DOWN_TIME                16
 
 /* Define battery monitor constant */
@@ -106,8 +107,8 @@ static void disableEBI(void);
 static void setupBackupRTC(void);
 static void setupBackupDomain(void);
 static void setupWatchdogTimer(void);
+static void handleTimeOverflow(void);
 static void setupOpAmp(uint32_t gain);
-static void handleOverflowOfBURTC(void);
 static void enablePrsTimer(uint32_t samplerate);
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 
@@ -141,7 +142,7 @@ void AudioMoth_initialise() {
 
     /* Store the cause of the last reset, and clear the reset cause register */
 
-    unsigned long resetCause = RMU_ResetCauseGet();
+    uint32_t resetCause = RMU_ResetCauseGet();
 
     RMU_ResetCauseClear();
 
@@ -161,7 +162,7 @@ void AudioMoth_initialise() {
 
         setupBackupRTC();
 
-        /* Reset the time set flag and the counter */
+        /* Clear the time set flag and the counter */
 
         BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, 0);
 
@@ -169,21 +170,23 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, 0);
 
-        /* Set the initial power up flag */
-
-        BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  AM_BURTC_CANARY_VALUE);
-
         /* Clear the watch dog power up flag */
 
         BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
 
+        /* Set the initial power up flag */
+
+        BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  AM_BURTC_CANARY_VALUE);
+
     } else {
 
-        /* Reset the BURTC counter if overflow flag has been set */
+        /* Handle overflow of the BURTC counter if overflow flag has been set */
 
         if (BURTC_IntGet() & BURTC_IF_OF) {
 
-            handleOverflowOfBURTC();
+            handleTimeOverflow();
+
+            BURTC_IntClear(BURTC_IF_OF);
 
         }
 
@@ -204,7 +207,7 @@ void AudioMoth_initialise() {
         }
 
     }
-	
+
     /* Put GPIO pins in correct state */
 
     setupGPIO();
@@ -353,7 +356,19 @@ uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency) {
 
 }
 
-/* Interrupt handler for switch change events, microphone samples, timer overflow and DMA transfers */
+/* Interrupt handler for RTC, switch change events, microphone samples, timer overflow and DMA transfers */
+
+void RTC_IRQHandler(void) {
+
+    /* Clear interrupt source */
+
+    RTC_IntClear(RTC_IFC_COMP0);
+
+    /* Feed the watch dog */
+
+    WDOG_Feed();
+
+}
 
 void GPIO_EVEN_IRQHandler(void) {
 
@@ -387,14 +402,13 @@ void ADC0_IRQHandler(void) {
 
 void TIMER1_IRQHandler(void) {
 
-  /* Clear the TIMER1 overflow flag */
+    /* Clear the TIMER1 overflow flag */
 
-  TIMER_IntClear(TIMER1, TIMER_IF_OF);
+    TIMER_IntClear(TIMER1, TIMER_IF_OF);
 
-  /* Reset the flag */
+    /* Reset the flag */
 
-  delayTimmerRunning = false;
-
+    delayTimmerRunning = false;
 
 }
 
@@ -449,7 +463,7 @@ static void setupBackupDomain(void) {
 
 }
 
-/* Configure RTC */
+/* Configure BURTC */
 
 static void setupBackupRTC(void) {
 
@@ -470,6 +484,7 @@ static void setupBackupRTC(void) {
     /* Enable interrupt on counter overflow */
 
     BURTC_IntClear(BURTC_IF_OF);
+
     BURTC_IntEnable(BURTC_IF_OF);
 
     /* Enable the timer */
@@ -632,7 +647,7 @@ uint32_t AudioMoth_calculateSampleRate(uint32_t frequency, uint32_t clockDivider
 
     if (acquisitionCycles != 16 && acquisitionCycles != 8 && acquisitionCycles != 4 && acquisitionCycles != 2)  acquisitionCycles = 1;
 
-    if (oversampleRate != 128 && oversampleRate != 64 && oversampleRate != 32 && oversampleRate != 16 && oversampleRate != 8 && oversampleRate != 4) oversampleRate = 2;
+    if (oversampleRate != 128 && oversampleRate != 64 && oversampleRate != 32 && oversampleRate != 16 && oversampleRate != 8 && oversampleRate != 4 && oversampleRate != 2) oversampleRate = 1;
 
     if (clockDivider > 128) clockDivider = 128;
 
@@ -910,27 +925,33 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
     /* Calculate new comparison value */
 
-    uint32_t currentCounterValue = BURTC_CounterGet();
+    uint32_t counterValueToMatch = BURTC_CounterGet();
 
     if (seconds == 0) {
 
-        BURTC_CompareSet(0, currentCounterValue + AM_MINIMUM_POWER_DOWN_TIME);
+        counterValueToMatch += AM_MINIMUM_POWER_DOWN_TIME;
 
     } else {
 
-        uint32_t counterValueToMatch = currentCounterValue + seconds * AM_LFXO_TICKS_PER_SECOND;
+        counterValueToMatch += seconds * AM_BURTC_TICKS_PER_SECOND;
 
         if (synchronised) {
 
-            counterValueToMatch -= counterValueToMatch % AM_LFXO_TICKS_PER_SECOND;
+            uint32_t offset = counterValueToMatch % AM_BURTC_TICKS_PER_SECOND;
 
-            counterValueToMatch = MAX(counterValueToMatch, currentCounterValue + AM_MINIMUM_POWER_DOWN_TIME);
+            counterValueToMatch -= offset;
+
+            if (seconds == 1 && offset > AM_BURTC_TICKS_PER_SECOND - AM_MINIMUM_POWER_DOWN_TIME) {
+
+                counterValueToMatch += offset - (AM_BURTC_TICKS_PER_SECOND - AM_MINIMUM_POWER_DOWN_TIME);
+
+            }
 
         }
 
-        BURTC_CompareSet(0, counterValueToMatch);
-
     }
+
+    BURTC_CompareSet(0, counterValueToMatch);
 
     /* Enable compare interrupt flag */
 
@@ -1116,15 +1137,47 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
 }
 
+/* Functions to enable and disable the RTC to provide a 10 second interrupt */
+
+static void enableRTC() {
+
+    CMU_ClockSelectSet(cmuClock_LFA, cmuSelect_LFXO);
+
+    CMU_ClockEnable(cmuClock_RTC, true);
+
+    RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
+
+    RTC_CompareSet(0, 10 * AM_LFXO_TICKS_PER_SECOND);
+
+    RTC_IntEnable(RTC_IEN_COMP0);
+
+    NVIC_ClearPendingIRQ(RTC_IRQn);
+
+    NVIC_EnableIRQ(RTC_IRQn);
+
+    RTC_Init(&rtcInit);
+
+}
+
+static void disableRTC() {
+
+    CMU_ClockEnable(cmuClock_RTC, false);
+
+    RTC_Reset();
+
+}
+
+/* Function to handle USB from the application */
+
 void AudioMoth_handleUSB(void) {
 
     /* Configure data input pin */
 
     GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeInput, 0);
 
-    /* Disable the watch dog timer */
+    /* Enable RTC for watch dog and BURTC overflow */
 
-    WDOG_Enable(false);
+    enableRTC();
 
     /* Enable the USB interface */
 
@@ -1133,6 +1186,8 @@ void AudioMoth_handleUSB(void) {
     /* Stay within this busy loop while the switch is in USB */
 
     while (AudioMoth_getSwitchPosition() == AM_SWITCH_USB) {
+
+        /* Light LED to indicate activity */
 
         if (GPIO_PinInGet(USB_DATA_GPIOPORT, USB_P)) {
 
@@ -1145,6 +1200,18 @@ void AudioMoth_handleUSB(void) {
             AudioMoth_delay(1);
 
         }
+
+        /* Handle BURTC overflow */
+
+        if (BURTC_IntGet() & BURTC_IF_OF) {
+
+            handleTimeOverflow();
+
+            BURTC_IntClear(BURTC_IF_OF);
+
+        }
+
+        /* Enter low power standby if USB is unplugged */
 
         if (USBD_SafeToEnterEM2()) {
 
@@ -1160,9 +1227,9 @@ void AudioMoth_handleUSB(void) {
     USBD_Stop();
     USBD_Disconnect();
 
-    /* Re-enable the watch dog timer */
+    /* Disable RTC */
 
-    WDOG_Enable(true);
+    disableRTC();
 
     /* Disable the data input pin */
 
@@ -1310,23 +1377,11 @@ bool AudioMoth_hasTimeBeenSet(void) {
 
 }
 
-static void handleOverflowOfBURTC() {
-
-    BURTC_IntClear(BURTC_IF_OF);
-
-    uint32_t offsetHigh = BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH);
-
-    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, offsetHigh + 1);
-
-    BURTC_IntEnable(BURTC_IF_OF);
-
-}
-
 static void setTime(uint32_t time, uint16_t milliseconds) {
 
-    uint32_t ticks = (AM_LFXO_TICKS_PER_SECOND * (uint32_t)milliseconds) / MILLISECONDS_IN_SECOND;
+    uint32_t ticks = (AM_BURTC_TICKS_PER_SECOND * (uint32_t)milliseconds) / MILLISECONDS_IN_SECOND;
 
-    uint64_t intendedCounter = AM_LFXO_TICKS_PER_SECOND * (uint64_t)time + ticks;
+    uint64_t intendedCounter = AM_BURTC_TICKS_PER_SECOND * (uint64_t)time + ticks;
 
     uint64_t offset = intendedCounter - (uint64_t)BURTC_CounterGet();
 
@@ -1335,8 +1390,6 @@ static void setTime(uint32_t time, uint16_t milliseconds) {
     BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_LOW, (uint32_t)(offset & 0xFFFFFFFF));
 
     BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, AM_BURTC_CANARY_VALUE);
-
-    BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
 
 }
 
@@ -1350,17 +1403,25 @@ static void getTime(uint32_t *time, uint16_t *milliseconds) {
 
     if (time != NULL) {
 
-        *time = currentCounter / AM_LFXO_TICKS_PER_SECOND;
+        *time = currentCounter / AM_BURTC_TICKS_PER_SECOND;
 
     }
 
     if (milliseconds != NULL) {
 
-        uint32_t ticks = currentCounter % AM_LFXO_TICKS_PER_SECOND;
+        uint32_t ticks = currentCounter % AM_BURTC_TICKS_PER_SECOND;
 
-        *milliseconds = (uint16_t)(MILLISECONDS_IN_SECOND * ticks / AM_LFXO_TICKS_PER_SECOND);
+        *milliseconds = (uint16_t)(MILLISECONDS_IN_SECOND * ticks / AM_BURTC_TICKS_PER_SECOND);
 
     }
+
+}
+
+static void handleTimeOverflow(void) {
+
+    uint32_t offsetHigh = BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH);
+
+    BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, offsetHigh + 1);
 
 }
 
@@ -1370,9 +1431,11 @@ void AudioMoth_setTime(uint32_t time, uint16_t milliseconds) {
 
     if (BURTC_IntGet() & BURTC_IF_OF) {
 
-        handleOverflowOfBURTC();
+        handleTimeOverflow();
 
         setTime(time, milliseconds);
+
+        BURTC_IntClear(BURTC_IF_OF);
 
     }
 
@@ -1384,9 +1447,11 @@ void AudioMoth_getTime(uint32_t *time, uint16_t *milliseconds) {
 
     if (BURTC_IntGet() & BURTC_IF_OF) {
 
-        handleOverflowOfBURTC();
+        handleTimeOverflow();
 
         getTime(time, milliseconds);
+
+        BURTC_IntClear(BURTC_IF_OF);
 
     }
 
@@ -1434,15 +1499,17 @@ void AudioMoth_stopWatchdog(void) {
 
 DWORD get_fattime(void) {
 
-    int8_t timezone = 0;
+    int8_t timezoneHours = 0;
 
-    AudioMoth_timezoneRequested(&timezone);
+    int8_t timezoneMinutes = 0;
+
+    AudioMoth_timezoneRequested(&timezoneHours, &timezoneMinutes);
 
     uint32_t currentTime;
 
     AudioMoth_getTime(&currentTime, NULL);
 
-    time_t fatTime = currentTime + timezone * 60 * 60;
+    time_t fatTime = currentTime + timezoneHours * 60 * 60 + timezoneMinutes * 60;
 
     struct tm timePtr;
     gmtime_r(&fatTime, &timePtr);
@@ -1499,7 +1566,7 @@ bool AudioMoth_enableFileSystem(void) {
 
     /* Initialise file system */
 
-    if (f_mount(0, &fatfs) != FR_OK) {
+    if (f_mount(&fatfs, "", 1) != FR_OK) {
         return false;
     }
 
@@ -1646,119 +1713,99 @@ bool AudioMoth_folderExists(char *folderName){
 
 }
 
-/* Additional functions to handle long file names */
-
-WCHAR ff_convert (WCHAR wch, UINT dir){
-    return wch < 0x80 ? wch : 0;
-}
-
-WCHAR ff_wtoupper (WCHAR wch) {
-    if (wch < 0x80) {
-        if (wch >= 'a' && wch <= 'z') {
-            wch &= ~0x20;
-        }
-        return wch;
-    }
-    return 0;
-}
-
 /* Functions to enable and disable EBI */
 
 static void enableEBI(void) {
 
-  /* Enable clocks */
+    /* Enable clocks */
 
-  CMU_ClockEnable(cmuClock_EBI, true);
+    CMU_ClockEnable(cmuClock_EBI, true);
 
-  EBI_Init_TypeDef ebiConfig = EBI_INIT_DEFAULT;
+    /* Enable EBI AD0..07 data pins*/
 
-  /* Configure GPIO pins as push pull */
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModePushPull, 0);
 
-  /* EBI AD0..07 data pins*/
+    /* Enable EBI AD08..15 address pins*/
 
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD02, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD03, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD04, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD05, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModePushPull, 0);
 
-  /* EBI AD08..15 address pins*/
+    /* Enable EBI A16..24 extension address pins*/
 
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD10, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD11, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD12, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD13, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A13, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A14, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModePushPull, 0);
 
-  /* EBI A16..24 extension address pins*/
+    /* Enable EBI CS0-CS1 */
 
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A13, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A14, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModePushPull, 0);
 
-  /* EBI CS0-CS1 */
+    /* Enable EBI WEN/OEN */
 
-  GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModePushPull, 0);
+    GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModePushPull, 0);
 
-  /* EBI WEN/OEN */
+    /* Configure EBI controller, changing default values */
 
-  GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModePushPull, 0);
-  GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModePushPull, 0);
+    EBI_Init_TypeDef ebiConfig = EBI_INIT_DEFAULT;
 
-  /* Configure EBI controller, changing default values */
+    ebiConfig.mode = ebiModeD8A8;
+    ebiConfig.banks = EBI_BANK0;
+    ebiConfig.csLines = EBI_CS0 | EBI_CS1;
+    ebiConfig.readHalfRE = true;
 
-  ebiConfig.mode = ebiModeD8A8;
-  ebiConfig.banks = EBI_BANK0;
-  ebiConfig.csLines = EBI_CS0 | EBI_CS1;
-  ebiConfig.readHalfRE = true;
+    ebiConfig.aLow = ebiALowA8;
+    ebiConfig.aHigh = ebiAHighA18;
 
-  ebiConfig.aLow = ebiALowA8;
-  ebiConfig.aHigh = ebiAHighA18;
+    /* Address Setup and hold time */
 
-  /* Address Setup and hold time */
+    ebiConfig.addrHoldCycles  = 0;
+    ebiConfig.addrSetupCycles = 0;
 
-  ebiConfig.addrHoldCycles  = 0;
-  ebiConfig.addrSetupCycles = 0;
+    /* Read cycle times */
 
-  /* Read cycle times */
+    ebiConfig.readStrobeCycles = 3;
+    ebiConfig.readHoldCycles   = 1;
+    ebiConfig.readSetupCycles  = 2;
 
-  ebiConfig.readStrobeCycles = 3;
-  ebiConfig.readHoldCycles   = 1;
-  ebiConfig.readSetupCycles  = 2;
+    /* Write cycle times */
 
-  /* Write cycle times */
+    ebiConfig.writeStrobeCycles = 6;
+    ebiConfig.writeHoldCycles   = 0;
+    ebiConfig.writeSetupCycles  = 0;
 
-  ebiConfig.writeStrobeCycles = 6;
-  ebiConfig.writeHoldCycles   = 0;
-  ebiConfig.writeSetupCycles  = 0;
+    ebiConfig.location = ebiLocation1;
 
-  ebiConfig.location = ebiLocation1;
+    /* Configure EBI */
 
-  /* Configure EBI */
-
-  EBI_Init(&ebiConfig);
+    EBI_Init(&ebiConfig);
 
 }
 
 static void disableEBI(void) {
 
-    /* Disable GPIO pins */
-
-    /* EBI AD0..07 data pins*/
+    /* Disable EBI AD0..07 data pins*/
 
     GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD00, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD01, gpioModeDisabled, 0);
@@ -1769,7 +1816,7 @@ static void disableEBI(void) {
     GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD06, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_AD07, gpioModeDisabled, 0);
 
-    /* EBI AD08..15 address pins*/
+    /* Disable EBI AD08..15 address pins*/
 
     GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModeDisabled, 0);
@@ -1780,7 +1827,7 @@ static void disableEBI(void) {
     GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD14, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD15, gpioModeDisabled, 0);
 
-    /* EBI A16..24 extension address pins*/
+    /* Disable EBI A16..24 extension address pins*/
 
     GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A16, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_B, EBI_A17, gpioModeDisabled, 0);
@@ -1791,12 +1838,12 @@ static void disableEBI(void) {
     GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A23, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A24, gpioModeDisabled, 0);
 
-    /* EBI CS0-CS1 */
+    /* Disable EBI CS0-CS1 */
 
     GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, 0);
 
-    /* EBI WEN/OEN */
+    /* Disable EBI WEN/OEN */
 
     GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_OE, gpioModeDisabled, 0);
     GPIO_PinModeSet(EBI_GPIOPORT_F, EBI_WE, gpioModeDisabled, 0);
