@@ -51,6 +51,10 @@
 #define AM_BURTC_TICKS_PER_SECOND                 1024
 #define AM_MINIMUM_POWER_DOWN_TIME                16
 
+/* Define USB EM2 wake constant */
+
+#define AM_USB_EM2_RTC_WAKEUP_INTERVAL            10
+
 /* Define battery monitor constant */
 
 #define BASE_BATTERY_MONITOR_THRESHOLD            34
@@ -80,9 +84,11 @@
 #define AM_USB_MSG_TYPE_SET_APP_PACKET            0x06
 #define AM_USB_MSG_TYPE_GET_FIRMWARE_VERSION      0x07
 #define AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION  0x08
+#define AM_USB_MSG_TYPE_QUERY_BOOTLOADER          0x09
+#define AM_USB_MSG_TYPE_ENTER_BOOTLOADER          0x0A
 
-STATIC_UBUF(receiveBuffer, AM_USB_BUFFERSIZE);
-STATIC_UBUF(transmitBuffer, AM_USB_BUFFERSIZE);
+STATIC_UBUF(receiveBuffer, 2 * AM_USB_BUFFERSIZE);
+STATIC_UBUF(transmitBuffer, 2 * AM_USB_BUFFERSIZE);
 
 /* SD card variables */
 
@@ -98,6 +104,10 @@ static uint16_t numberOfSamplesPerTransfer;
 /* Delay timer variable */
 
 static volatile bool delayTimmerRunning;
+
+/* USB boot loader variable */
+
+static volatile bool enterBootloader;
 
 /* Function prototypes */
 
@@ -1123,6 +1133,24 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
             break;
 
+        case AM_USB_MSG_TYPE_QUERY_BOOTLOADER:
+
+            /* Query support for automatic boot loader */
+
+            transmitBuffer[1] = 0x01;
+
+            break;
+
+        case AM_USB_MSG_TYPE_ENTER_BOOTLOADER:
+
+            /* Enters boot loader after sending response */
+
+            enterBootloader = true;
+
+            transmitBuffer[1] = 0x01;
+
+            break;
+
         default:
 
             break;
@@ -1147,7 +1175,7 @@ static void enableRTC() {
 
     RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
 
-    RTC_CompareSet(0, 10 * AM_LFXO_TICKS_PER_SECOND);
+    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFXO_TICKS_PER_SECOND);
 
     RTC_IntEnable(RTC_IEN_COMP0);
 
@@ -1185,7 +1213,7 @@ void AudioMoth_handleUSB(void) {
 
     /* Stay within this busy loop while the switch is in USB */
 
-    while (AudioMoth_getSwitchPosition() == AM_SWITCH_USB) {
+    while (AudioMoth_getSwitchPosition() == AM_SWITCH_USB && !enterBootloader) {
 
         /* Light LED to indicate activity */
 
@@ -1221,10 +1249,16 @@ void AudioMoth_handleUSB(void) {
 
     }
 
+    /* Wait for last response to be sent */
+
+    AudioMoth_delay(100);
+
     /* Disable USB */
 
     USBD_AbortAllTransfers();
+
     USBD_Stop();
+
     USBD_Disconnect();
 
     /* Disable RTC */
@@ -1235,7 +1269,56 @@ void AudioMoth_handleUSB(void) {
 
     GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeDisabled, 0);
 
+    /* Jump directly to the boot loader */
+
+    if (enterBootloader) {
+
+        /* Disable watch dog timer */
+
+        WDOG_Enable(false);
+
+        /* Pull boot loader pin high */
+
+        GPIO->ROUTE &= ~GPIO_ROUTE_SWCLKPEN;
+
+        GPIO_PinModeSet(gpioPortF, 0, gpioModePushPull, 1);
+
+        /* Jump to boot loader */
+
+        __asm (
+
+            /* Define the boot loader and vector table addresses */
+
+            ".equ BOOTLOADER_ADDRESS, 0x00000000\n\t"
+
+            ".equ SCB_VTOR, (0xE000E000 + 0x0D00 + 0x008)\n\t"
+
+            /* Load the boot loader address */
+
+            "ldr r0, =BOOTLOADER_ADDRESS\n\t"
+
+            /* Set the vector table */
+
+            "ldr r1, =SCB_VTOR\n\t"
+            "str r0, [r1]\n\t"
+
+            /* Set the stack pointer */
+
+            "ldr r1, [r0]\n\t"
+            "msr msp, r1\n\t"
+            "msr psp, r1\n\t"
+
+            /* Jump into the boot loader */
+
+            "ldr r1, [r0, #4]\n\t"
+            "mov pc, r1\n\t"
+
+        );
+
+    }
+
 }
+
 
 /* Functions to handle the battery monitor */
 
