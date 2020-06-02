@@ -7,6 +7,8 @@
 #include <stdint.h>
 #include <stdbool.h>
 
+/* AudioMoth constants */
+
 #define AM_FIRMWARE_VERSION_LENGTH             3
 #define AM_FIRMWARE_DESCRIPTION_LENGTH         32
 
@@ -19,13 +21,23 @@
 #define AM_UNIQUE_ID_START_ADDRESS             0xFE081F0
 #define AM_UNIQUE_ID_SIZE_IN_BYTES             8
 
+#define AM_BATTERY_STATE_OFFSET                3500
+#define AM_EXT_BAT_STATE_OFFSET                2400
+#define AM_BATTERY_STATE_INCREMENT             100
+
 /* Switch and battery state enumerations */
 
 typedef enum {AM_SWITCH_CUSTOM, AM_SWITCH_DEFAULT, AM_SWITCH_USB, AM_SWITCH_NONE} AM_switchPosition_t;
 
 typedef enum {AM_HFRCO_1MHZ, AM_HFRCO_7MHZ, AM_HFRCO_11MHZ, AM_HFRCO_14MHZ, AM_HFRCO_21MHZ, AM_HFRCO_28MHZ, AM_HFXO} AM_clockFrequency_t;
 
-typedef enum {AM_BATTERY_LOW, AM_BATTERY_3V6, AM_BATTERY_3V7, AM_BATTERY_3V8, AM_BATTERY_3V9, AM_BATTERY_4V0, AM_BATTERY_4V1, AM_BATTERY_4V2, AM_BATTERY_4V3, AM_BATTERY_4V4, AM_BATTERY_4V5, AM_BATTERY_4V6, AM_BATTERY_4V7, AM_BATTERY_4V8, AM_BATTERY_4V9, AM_BATTERY_FULL } AM_batteryState_t;
+typedef enum {AM_BATTERY_LOW, AM_BATTERY_3V6, AM_BATTERY_3V7, AM_BATTERY_3V8, AM_BATTERY_3V9, AM_BATTERY_4V0, AM_BATTERY_4V1, AM_BATTERY_4V2, \
+              AM_BATTERY_4V3, AM_BATTERY_4V4, AM_BATTERY_4V5, AM_BATTERY_4V6, AM_BATTERY_4V7, AM_BATTERY_4V8, AM_BATTERY_4V9, AM_BATTERY_FULL } AM_batteryState_t;
+
+typedef enum {AM_EXT_BAT_LOW, AM_EXT_BAT_2V5, AM_EXT_BAT_2V6, AM_EXT_BAT_2V7, AM_EXT_BAT_2V8, AM_EXT_BAT_2V9, AM_EXT_BAT_3V0, AM_EXT_BAT_3V1, \
+              AM_EXT_BAT_3V2, AM_EXT_BAT_3V3, AM_EXT_BAT_3V4, AM_EXT_BAT_3V5, AM_EXT_BAT_3V6, AM_EXT_BAT_3V7, AM_EXT_BAT_3V8, AM_EXT_BAT_3V9, \
+              AM_EXT_BAT_4V0, AM_EXT_BAT_4V1, AM_EXT_BAT_4V2, AM_EXT_BAT_4V3, AM_EXT_BAT_4V4, AM_EXT_BAT_4V5, AM_EXT_BAT_4V6, AM_EXT_BAT_4V7, \
+              AM_EXT_BAT_4V8, AM_EXT_BAT_4V9, AM_EXT_BAT_FULL} AM_extendedBatteryState_t;
 
 /* Time zone handler */
 
@@ -104,19 +116,40 @@ void AudioMoth_stopWatchdog(void);
 void AudioMoth_feedWatchdog(void);
 bool AudioMoth_hasWatchdogResetOccured(void);
 
+/* Supply voltage monitoring */
+
+void AudioMoth_enableSupplyMonitor(void);
+void AudioMoth_disableSupplyMonitor(void);
+
+void AudioMoth_setSupplyMonitorThreshold(uint32_t supplyVoltage);
+bool AudioMoth_isSupplyAboveThreshold(void);
+
 /* Battery state monitoring */
 
 void AudioMoth_enableBatteryMonitor(void);
 void AudioMoth_disableBatteryMonitor(void);
 
-void AudioMoth_setBatteryMonitorThreshold(AM_batteryState_t batteryState);
-bool AudioMoth_isBatteryMonitorAboveThreshold(void);
+void AudioMoth_setBatteryMonitorThreshold(uint32_t batteryVoltage, uint32_t supplyVoltage);
+bool AudioMoth_isBatteryAboveThreshold(void);
 
-AM_batteryState_t AudioMoth_getBatteryState();
+/* Supply voltage and battery voltage / state reporting */
+
+uint32_t AudioMoth_getSupplyVoltage(void);
+
+AM_batteryState_t AudioMoth_getBatteryState(uint32_t supplyVoltage);
+
+AM_extendedBatteryState_t AudioMoth_getExtendedBatteryState(uint32_t supplyVoltage);
+
+/* Temperature monitoring */
+
+void AudioMoth_enableTemperature(void);
+void AudioMoth_disableTemperature(void);
+
+int32_t AudioMoth_getTemperature(void);
 
 /* Switch position monitoring */
 
-AM_switchPosition_t AudioMoth_getSwitchPosition();
+AM_switchPosition_t AudioMoth_getSwitchPosition(void);
 
 /* Busy delay */
 
@@ -152,7 +185,7 @@ bool AudioMoth_folderExists(char *folderName);
 
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename);
 
-bool AudioMoth_closeFile();
+bool AudioMoth_closeFile(void);
 
 /* Debugging */
 

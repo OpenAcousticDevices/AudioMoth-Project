@@ -4,54 +4,56 @@
  * June 2017
  *****************************************************************************/
 
-#ifndef PINOUTS_H_
-#define PINOUTS_H_
+#ifndef __PINOUTS_H
+#define __PINOUTS_H
 
-/* MIC VOLTAGE */
+/* Voltage reference power */
 
 #define VREF_GPIOPORT                           gpioPortA
 #define VREF_EN                                 11
 
-/* BATTERY MONITORING */
+/* Battery monitor */
 
 #define BAT_MON_GPIOPORT                        gpioPortC
 #define BAT_MON_EN                              3
 
-/* LED GPIO */
+/* Red and green LED */
 
 #define LED_GPIOPORT                            gpioPortC
 #define GREEN_PIN                               5
 #define RED_PIN                                 4
 
-/* Button GPIO */
+/* Switch (DEFAULT) position */
 
 #define SWITCH_GPIOPORT                         gpioPortC
 #define SWITCH_PIN                              6
 
-/* USB GPIO */
+/* Switch (USB) position */
 
 #define USB_GPIOPORT                            gpioPortD
 #define USB_PIN                                 8
 
+/* SRAM power */
+
 #define SRAMEN_GPIOPORT                         gpioPortD
 #define SRAM_ENABLE_N                           11
 
-/* Switch GPIO */
+/* SD card power */
 
 #define SDEN_GPIOPORT                           gpioPortD
 #define SD_ENABLE_N                             12
 
-/* MIC VOLTAGE */
+/* Microphone power */
 
 #define VMIC_GPIOPORT                           gpioPortE
 #define VMIC_EN_N                               0
 
-/* MIC VOLTAGE */
+/* USB data */
 
 #define USB_DATA_GPIOPORT                       gpioPortF
 #define USB_P                                   11
 
-/* EBI Pinouts*/
+/* EBI */
 
 #define EBI_GPIOPORT_A                          gpioPortA
 #define EBI_AD08                                15
@@ -102,4 +104,4 @@
 #define EBI_OE                                  9
 #define EBI_WE                                  8
 
-#endif /* PINOUTS_H_ */
+#endif /* __PINOUTS_H */

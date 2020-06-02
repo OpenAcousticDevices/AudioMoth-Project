@@ -4,8 +4,8 @@
  * June 2017
  *****************************************************************************/
 
-#ifndef _USBCALLBACKS_H_
-#define _USBCALLBACKS_H_
+#ifndef __USBCALLBACKS_H
+#define __USBCALLBACKS_H
 
 /* Callback which provides the HID specific descriptors */
 
@@ -15,12 +15,20 @@ int setupCmd(const USB_Setup_TypeDef *setup);
 
 void stateChange(USBD_State_TypeDef oldState, USBD_State_TypeDef newState);
 
-/* Callback on completion of data send */
+/* Callback on completion of data send  on HID */
 
-int dataSentCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining);
+int dataSentHIDCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining);
 
-/* Callback on receipt of message from the USB host */
+/* Callback on completion of data send on Web USB */
 
-int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining);
+int dataSentWebUSBCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining);
 
-#endif /* _USBCALLBACKS_H_ */
+/* Callback on receipt of message from the USB host on HID */
+
+int dataReceivedHIDCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining);
+
+/* Callback on receipt of message from the USB host on Web USB */
+
+int dataReceivedWebUSBCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining);
+
+#endif /* __USBCALLBACKS_H */

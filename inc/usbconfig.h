@@ -13,19 +13,27 @@
 
 /* Specify number of endpoints used (in addition to EP0) */
 
-#define NUM_EP_USED 2
+#define NUM_EP_USED 4
 
 /* Select TIMER0 to be used by the USB stack. This timer must not be used by the application */
 
 #define USB_TIMER USB_TIMER0
 
-/* Endpoint for USB data IN  (device to host) */
+/* End point for USB data IN  (device to host) */
 
-#define EP_IN 0x81
+#define HID_EP_IN 0x81
 
-/* Endpoint for USB data OUT (host to device) */
+/* End point for USB data OUT (host to device) */
 
-#define EP_OUT 0x01
+#define HID_EP_OUT 0x01
+
+/* End point for Web USB data IN  (device to host) */
+
+#define WEBUSB_EP_IN 0x82
+
+/* End point for Web USB data OUT (host to device) */
+
+#define WEBUSB_EP_OUT 0x02
 
 /* Select the clock used when USB is in low power mode */
 

@@ -9,23 +9,24 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-#include "em_rtc.h"
 #include "em_adc.h"
-#include "em_prs.h"
 #include "em_cmu.h"
 #include "em_dma.h"
-#include "em_ebi.h"
 #include "em_emu.h"
+#include "em_prs.h"
+#include "em_ebi.h"
 #include "em_rmu.h"
+#include "em_rtc.h"
 #include "em_usb.h"
-#include "em_chip.h"
 #include "em_acmp.h"
-#include "em_wdog.h"
+#include "em_chip.h"
 #include "em_gpio.h"
+#include "em_vcmp.h"
+#include "em_wdog.h"
 #include "em_burtc.h"
+#include "em_opamp.h"
 #include "em_timer.h"
 #include "em_usart.h"
-#include "em_opamp.h"
 
 #include "ff.h"
 #include "diskio.h"
@@ -39,25 +40,42 @@
 
 #include "audioMoth.h"
 
-/*  Useful macros */
-
-#define MIN(a, b)                                 ((a) < (b) ? (a) : (b))
-#define MAX(a, b)                                 ((a) > (b) ? (a) : (b))
-
-/* Define time constants */
+/* Time constants */
 
 #define MILLISECONDS_IN_SECOND                    1000
 #define AM_LFXO_TICKS_PER_SECOND                  32768
 #define AM_BURTC_TICKS_PER_SECOND                 1024
 #define AM_MINIMUM_POWER_DOWN_TIME                16
 
-/* Define USB EM2 wake constant */
+/* USB EM2 wake constant */
 
 #define AM_USB_EM2_RTC_WAKEUP_INTERVAL            10
 
-/* Define battery monitor constant */
+/* Comparator limit constants */
 
-#define BASE_BATTERY_MONITOR_THRESHOLD            34
+#define MINIMIMUM_COMPARATOR_LEVEL                0
+#define MAXIMIMUM_COMPARATOR_LEVEL                63
+
+/* Supply monitor constants */
+
+#define MINIMIMUM_SUPPLY_MONITOR_LEVEL            0
+#define MAXIMIMUM_SUPPLY_MONITOR_LEVEL            63
+
+#define VCMP_VOLTAGE_INCREMENT                    34
+#define VCMP_VOLTAGE_OFFSET                       1667
+
+/* Battery monitor constants */
+
+#define BATTERY_MONITOR_DIVIDER                   2
+
+#define MINIMIMUM_BATTERY_MONITOR_VOLTAGE         2450
+#define MAXIMIMUM_BATTERY_MONITOR_VOLTAGE         4950
+
+/* Temperature constants */
+
+#define MILLIDEGREES_IN_DEGREE                    1000
+#define TEMPERATURE_GRADIENT                      63
+#define GRADIENT_MULTIPLIER                       10
 
 /*  Define RTC backup register constants */
 
@@ -66,13 +84,14 @@
 #define AM_BURTC_CLOCK_SET_FLAG                   2
 #define AM_BURTC_WATCH_DOG_FLAG                   3
 #define AM_BURTC_INITIAL_POWER_UP_FLAG            4
+#define AM_BURTC_HARDWARE_VERSION                 5
 
 #define AM_BURTC_CANARY_VALUE                     0x11223344
 
 #define AM_BURTC_TOTAL_REGISTERS                  128
 #define AM_BURTC_RESERVED_REGISTERS               8
 
-/* Define USB message types and declare buffers */
+/* USB message types */
 
 #define AM_USB_BUFFERSIZE                         64
 
@@ -86,6 +105,28 @@
 #define AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION  0x08
 #define AM_USB_MSG_TYPE_QUERY_BOOTLOADER          0x09
 #define AM_USB_MSG_TYPE_ENTER_BOOTLOADER          0x0A
+
+/* Define WebUSB constants */
+
+#define USB_BOS_DESCRIPTOR                        0x0F
+
+#define WEB_USB_REQUEST_TYPE                      0xC0
+
+#define WEB_USB_URL_REQUEST                       0x01
+#define WEB_USB_URL_INDEX                         0x0002
+
+#define WEB_USB_MSFT_REQUEST                      0x02
+#define WEB_USB_MSFT_INDEX                        0x0007
+
+/* Useful macros */
+
+#define MIN(a, b)                                 ((a) < (b) ? (a) : (b))
+
+#define MAX(a, b)                                 ((a) > (b) ? (a) : (b))
+
+#define ROUNDED_DIV(a, b)                         (((a) + (b/2)) / (b))
+
+/* USB buffers */
 
 STATIC_UBUF(receiveBuffer, 2 * AM_USB_BUFFERSIZE);
 STATIC_UBUF(transmitBuffer, 2 * AM_USB_BUFFERSIZE);
@@ -158,17 +199,17 @@ void AudioMoth_initialise() {
 
     /* If this is a start from power-off initialise low frequency oscillator and set up BURTC */
 
-    if (resetCause & RMU_RSTCAUSE_PORST) {
+    if ((resetCause & RMU_RSTCAUSE_EM4WURST) == 0) {
 
         /* Start LFXO and wait until it is stable */
 
         CMU_OscillatorEnable(cmuOsc_LFXO, true, true);
 
-        /* Setup up back up domain EM4 */
+        /* Setup backup domain for EM4 */
 
         setupBackupDomain();
 
-        /* Setup up backup RTC */
+        /* Setup backup RTC */
 
         setupBackupRTC();
 
@@ -179,10 +220,6 @@ void AudioMoth_initialise() {
         BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_LOW, 0);
 
         BURTC_RetRegSet(AM_BURTC_TIME_OFFSET_HIGH, 0);
-
-        /* Clear the watch dog power up flag */
-
-        BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
 
         /* Set the initial power up flag */
 
@@ -204,17 +241,17 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  0);
 
-        /* Record whether a watch dog timer reset has occurred */
+    }
 
-        if (resetCause & RMU_RSTCAUSE_WDOGRST) {
+    /* Record whether a watch dog timer reset has occurred */
 
-            BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, AM_BURTC_CANARY_VALUE);
+    if (resetCause & RMU_RSTCAUSE_WDOGRST) {
 
-        } else {
+        BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, AM_BURTC_CANARY_VALUE);
 
-            BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
+    } else {
 
-        }
+        BURTC_RetRegSet(AM_BURTC_WATCH_DOG_FLAG, 0);
 
     }
 
@@ -541,24 +578,24 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
     DMA_Init_TypeDef dmaInit;
 
-    dmaInit.hprot        = 0;
+    dmaInit.hprot = 0;
     dmaInit.controlBlock = dmaControlBlock;
 
     DMA_Init(&dmaInit);
 
     /* Setting up call-back function */
 
-    cb.cbFunc  = transferComplete;
+    cb.cbFunc = transferComplete;
     cb.userPtr = NULL;
 
     /* Setting up channel */
 
     DMA_CfgChannel_TypeDef chnlCfg;
 
-    chnlCfg.highPri   = false;
+    chnlCfg.highPri = false;
     chnlCfg.enableInt = true;
-    chnlCfg.select    = DMAREQ_ADC0_SINGLE;
-    chnlCfg.cb        = &cb;
+    chnlCfg.select = DMAREQ_ADC0_SINGLE;
+    chnlCfg.cb = &cb;
 
     DMA_CfgChannel(0, &chnlCfg);
 
@@ -566,11 +603,11 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
     DMA_CfgDescr_TypeDef descrCfg;
 
-    descrCfg.dstInc  = dmaDataInc2;
-    descrCfg.srcInc  = dmaDataIncNone;
-    descrCfg.size    = dmaDataSize2;
+    descrCfg.dstInc = dmaDataInc2;
+    descrCfg.srcInc = dmaDataIncNone;
+    descrCfg.size = dmaDataSize2;
     descrCfg.arbRate = dmaArbitrate1;
-    descrCfg.hprot   = 0;
+    descrCfg.hprot = 0;
 
     /* Set up both the primary and the secondary transfers */
 
@@ -610,6 +647,12 @@ void AudioMoth_disableMicrophone(void) {
     /* Stop the ADC interrupts */
 
     ADC_IntDisable(ADC0, ADC_IEN_SINGLE);
+
+    /* Disable interrupts */
+
+    NVIC_ClearPendingIRQ(ADC0_IRQn);
+
+    NVIC_DisableIRQ(ADC0_IRQn);
 
     /* Stop the DMA transfers */
 
@@ -699,45 +742,45 @@ static void setupOpAmp(uint32_t gain) {
 
     /* Define the configuration for OPA1 and OPA2 */
 
-    OPAMP_Init_TypeDef configuration1 = OPA_INIT_INVERTING;
+    OPAMP_Init_TypeDef opa1Init = OPA_INIT_INVERTING;
 
-    OPAMP_Init_TypeDef configuration2 = OPA_INIT_INVERTING_OPA2;
+    OPAMP_Init_TypeDef opa2Init = OPA_INIT_INVERTING_OPA2;
 
-    configuration2.outPen = DAC_OPA2MUX_OUTPEN_OUT1;
+    opa2Init.outPen = DAC_OPA2MUX_OUTPEN_OUT1;
 
     if (gain == 4) {
 
-        configuration1.resSel = opaResSelR2eq15R1;
-        configuration2.resSel = opaResSelR2eq2R1;
+        opa1Init.resSel = opaResSelR2eq15R1;
+        opa2Init.resSel = opaResSelR2eq2R1;
 
     } else if (gain == 3) {
 
-        configuration1.resSel = opaResSelR2eq15R1;
-        configuration2.resSel = opaResSelR1eq1_67R1;
+        opa1Init.resSel = opaResSelR2eq15R1;
+        opa2Init.resSel = opaResSelR1eq1_67R1;
 
     } else if (gain == 2) {
 
-        configuration1.resSel = opaResSelR2eq15R1;
-        configuration2.resSel = opaResSelR2eqR1;
+        opa1Init.resSel = opaResSelR2eq15R1;
+        opa2Init.resSel = opaResSelR2eqR1;
 
     } else if (gain == 1) {
 
-        configuration1.resSel = opaResSelR2eq7R1;
-        configuration2.resSel = opaResSelR2eqR1;
+        opa1Init.resSel = opaResSelR2eq7R1;
+        opa2Init.resSel = opaResSelR2eqR1;
 
     } else {
 
-        configuration1.resSel = opaResSelR2eq4_33R1;
-        configuration2.resSel = opaResSelR2eqR1;
+        opa1Init.resSel = opaResSelR2eq4_33R1;
+        opa2Init.resSel = opaResSelR2eqR1;
 
     }
 
 
     /* Enable OPA1 and OPA2 */
 
-    OPAMP_Enable(DAC0, OPA1, &configuration1);
+    OPAMP_Enable(DAC0, OPA1, &opa1Init);
 
-    OPAMP_Enable(DAC0, OPA2, &configuration2);
+    OPAMP_Enable(DAC0, OPA2, &opa2Init);
 
     /* Disable the clock */
 
@@ -791,39 +834,39 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
     /* Configure ADC single conversion structure */
 
-    ADC_InitSingle_TypeDef adcInitSingle = ADC_INITSINGLE_DEFAULT;
+    ADC_InitSingle_TypeDef adcSingleInit = ADC_INITSINGLE_DEFAULT;
 
-    adcInitSingle.prsSel = adcPRSSELCh0;
-    adcInitSingle.reference = adcRef2V5;
+    adcSingleInit.prsSel = adcPRSSELCh0;
+    adcSingleInit.reference = adcRef2V5;
 
     if (oversampleRate == 1) {
 
-    	adcInitSingle.resolution = adcRes12Bit;
+        adcSingleInit.resolution = adcRes12Bit;
 
     } else {
 
-        adcInitSingle.resolution = adcResOVS;
+        adcSingleInit.resolution = adcResOVS;
 
     }
 
-    adcInitSingle.input = adcSingleInpCh0Ch1;
-    adcInitSingle.prsEnable = true;
-    adcInitSingle.diff = true;
-    adcInitSingle.rep = false;
+    adcSingleInit.input = adcSingleInpCh0Ch1;
+    adcSingleInit.prsEnable = true;
+    adcSingleInit.diff = true;
+    adcSingleInit.rep = false;
 
     if (acquisitionCycles == 16) {
-        adcInitSingle.acqTime = adcAcqTime16;
+        adcSingleInit.acqTime = adcAcqTime16;
     } else if (acquisitionCycles == 8) {
-        adcInitSingle.acqTime = adcAcqTime8;
+        adcSingleInit.acqTime = adcAcqTime8;
     } else if (acquisitionCycles == 4) {
-        adcInitSingle.acqTime = adcAcqTime4;
+        adcSingleInit.acqTime = adcAcqTime4;
     } else if (acquisitionCycles == 2) {
-        adcInitSingle.acqTime = adcAcqTime2;
+        adcSingleInit.acqTime = adcAcqTime2;
     } else {
-        adcInitSingle.acqTime = adcAcqTime1;
+        adcSingleInit.acqTime = adcAcqTime1;
     }
 
-    ADC_InitSingle(ADC0, &adcInitSingle);
+    ADC_InitSingle(ADC0, &adcSingleInit);
 
 }
 
@@ -915,7 +958,7 @@ void AudioMoth_powerDown() {
 
     EMU_EnterEM4();
 
-    while (1) {};
+    while (1) { };
 
 }
 
@@ -971,11 +1014,25 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
     EMU_EnterEM4();
 
-    while (1) {};
+    while (1) { };
 
 }
 
-/* Callback which provides the HID specific descriptors */
+/* Callback to start the USB reading process when the device is configured */
+
+void stateChange(USBD_State_TypeDef oldState, USBD_State_TypeDef newState) {
+
+    if (newState == USBD_STATE_CONFIGURED) {
+
+        USBD_Read(HID_EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedHIDCallback);
+
+        USBD_Read(WEBUSB_EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedWebUSBCallback);
+
+    }
+
+}
+
+/* Callback which provides the WEB USB and USB HID specific descriptors */
 
 int setupCmd(const USB_Setup_TypeDef *setup) {
 
@@ -986,43 +1043,64 @@ int setupCmd(const USB_Setup_TypeDef *setup) {
         if (setup->bRequest == GET_DESCRIPTOR) {
         
             switch (setup->wValue >> 8) {
+
                 case USB_HID_REPORT_DESCRIPTOR:
+
                     USBD_Write( 0, (void*)HID_ReportDescriptor, SL_MIN(sizeof(HID_ReportDescriptor), setup->wLength), NULL );
+
                     retVal = USB_STATUS_OK;
+
                     break;
 
                 case USB_HID_DESCRIPTOR:
+
                     USBD_Write( 0, (void*)HID_Descriptor, SL_MIN(sizeof(HID_Descriptor), setup->wLength), NULL );
+
                     retVal = USB_STATUS_OK;
+
                     break;
+
+                case USB_BOS_DESCRIPTOR:
+
+                    USBD_Write(0, (void*)BOS_Descriptor, SL_MIN(sizeof(BOS_Descriptor), setup->wLength), NULL);
+
+                    retVal = USB_STATUS_OK;
+
+                    break;
+
             }
         
         }
     
     }
 
+    if (setup->bmRequestType == WEB_USB_REQUEST_TYPE) {
+
+        if (setup->bRequest == WEB_USB_URL_REQUEST && setup->wIndex == WEB_USB_URL_INDEX) {
+
+            USBD_Write(0, (void*)URL_Descriptor, SL_MIN(sizeof(URL_Descriptor), setup->wLength), NULL);
+
+            retVal = USB_STATUS_OK;
+
+        }
+
+        if (setup->bRequest == WEB_USB_MSFT_REQUEST && setup->wIndex == WEB_USB_MSFT_INDEX) {
+
+            USBD_Write(0, (void*)MICROSOFT_Descriptor, SL_MIN(sizeof(MICROSOFT_Descriptor), setup->wLength), NULL);
+
+            retVal = USB_STATUS_OK;
+
+        }
+
+    }
+
     return retVal;
 
 }
 
-/* Callback to start the USB reading process when the device is configured */
-
-void stateChange(USBD_State_TypeDef oldState, USBD_State_TypeDef newState) {
-    if (newState == USBD_STATE_CONFIGURED) {
-        USBD_Read(EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedCallback);
-    }
-}
-
-/* Callback on completion of data send. Used to request next read */
-
-int dataSentCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining) {
-    USBD_Read(EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedCallback);
-    return USB_STATUS_OK;
-}
-
 /* Callback on receipt of message from the USB host */
 
-int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining) {
+void handleUSBPacket() {
 
     uint8_t receivedMessageType = receiveBuffer[0];
 
@@ -1035,6 +1113,8 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
     /* Respond to message type */
 
     uint32_t timeNow;
+
+    uint32_t supplyVoltage;
 
     uint8_t *firmwareNumber;
 
@@ -1078,12 +1158,13 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
             /* Requests the state of the battery */
 
-            batteryState = AudioMoth_getBatteryState();
+            supplyVoltage = AudioMoth_getSupplyVoltage();
+
+            batteryState = AudioMoth_getBatteryState(supplyVoltage);
 
             memcpy(transmitBuffer + 1, &batteryState, 1);
 
             break;
-
 
         case AM_USB_MSG_TYPE_GET_APP_PACKET:
 
@@ -1157,9 +1238,55 @@ int dataReceivedCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t r
 
     }
 
+}
+
+/* Callback to handle data received from USB HID request */
+
+int dataReceivedHIDCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining) {
+
+    /* Handle response */
+
+    handleUSBPacket();
+
     /* Send the response */
 
-    USBD_Write(EP_IN, transmitBuffer, AM_USB_BUFFERSIZE, dataSentCallback);
+    USBD_Write(HID_EP_IN, transmitBuffer, AM_USB_BUFFERSIZE, dataSentHIDCallback);
+
+    return USB_STATUS_OK;
+
+}
+
+/* Callback to handle data received from WEB USB request */
+
+int dataReceivedWebUSBCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining) {
+
+    /* Handle response */
+
+    handleUSBPacket();
+
+    /* Send the response */
+
+    USBD_Write(WEBUSB_EP_IN, transmitBuffer, AM_USB_BUFFERSIZE, dataSentWebUSBCallback);
+
+    return USB_STATUS_OK;
+
+}
+
+/* Callback on completion of USB HID data send. Used to request next read */
+
+int dataSentHIDCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining) {
+
+    USBD_Read(HID_EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedHIDCallback);
+
+    return USB_STATUS_OK;
+
+}
+
+/* Callback on completion of WEB USB data send. Used to request next read */
+
+int dataSentWebUSBCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t remaining) {
+
+    USBD_Read(WEBUSB_EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedWebUSBCallback);
 
     return USB_STATUS_OK;
 
@@ -1319,44 +1446,132 @@ void AudioMoth_handleUSB(void) {
 
 }
 
+/* Functions to handle supply voltage monitoring */
+
+void AudioMoth_enableSupplyMonitor() {
+
+    /* Set up VCMP */
+
+    VCMP_Init_TypeDef vcmpInit = VCMP_INIT_DEFAULT;
+
+    vcmpInit.halfBias = false;
+    vcmpInit.lowPowerRef = false;
+    vcmpInit.warmup = vcmpWarmTime256Cycles;
+
+    /* Enable VCMP clock */
+
+    CMU_ClockEnable(cmuClock_VCMP, true);
+
+    /* Initialise the VCMP */
+
+    VCMP_Init(&vcmpInit);
+
+}
+
+void AudioMoth_disableSupplyMonitor() {
+
+    /* Disable VCMP */
+
+    VCMP_Disable();
+
+    /* Disable voltage comparator clock*/
+
+    CMU_ClockEnable(cmuClock_VCMP, false);
+
+}
+
+static inline void updateSupplyMonitorThresholdLevel(uint32_t level) {
+
+    /* Disable VCMP */
+
+    VCMP_Disable();
+
+    /* Set new threshold value */
+
+    level = MAX(MINIMIMUM_COMPARATOR_LEVEL, MIN(MAXIMIMUM_COMPARATOR_LEVEL, level));
+
+    VCMP->INPUTSEL = (VCMP->INPUTSEL & ~(_VCMP_INPUTSEL_TRIGLEVEL_MASK)) | (level << _VCMP_INPUTSEL_TRIGLEVEL_SHIFT);
+
+    /* Enable and wait until ready */
+
+    VCMP_Enable();
+
+    while (!(VCMP->STATUS & VCMP_STATUS_VCMPACT)) { };
+
+}
+
+void AudioMoth_setSupplyMonitorThreshold(uint32_t supplyVoltage) {
+
+    uint32_t level = ROUNDED_DIV(supplyVoltage - VCMP_VOLTAGE_OFFSET, VCMP_VOLTAGE_INCREMENT);
+
+    updateSupplyMonitorThresholdLevel(level);
+
+}
+
+bool AudioMoth_isSupplyAboveThreshold() {
+
+    return (VCMP->STATUS & VCMP_STATUS_VCMPOUT);
+
+}
 
 /* Functions to handle the battery monitor */
 
 void AudioMoth_enableBatteryMonitor() {
 
-    /* Turn battery monitor on */
+    /* Enable battery monitor pin */
 
     GPIO_PinOutSet(BAT_MON_GPIOPORT, BAT_MON_EN);
 
-    /* Enable comparator clock */
+    /* Initialise the ACMP */
+
+    ACMP_Init_TypeDef acmpInit = ACMP_INIT_DEFAULT;
+
+    acmpInit.warmTime = acmpWarmTime256;
+    acmpInit.hysteresisLevel = acmpHysteresisLevel0;
+
+    /* Enable ACMP clock */
 
     CMU_ClockEnable(cmuClock_ACMP0, true);
 
-}
-
-void AudioMoth_setBatteryMonitorThreshold(AM_batteryState_t batteryState) {
-
     /* Initialise the ACMP */
 
-    ACMP_Init_TypeDef acmp_init = ACMP_INIT_DEFAULT;
-
-    acmp_init.vddLevel = BASE_BATTERY_MONITOR_THRESHOLD + batteryState;
-
-    acmp_init.hysteresisLevel = acmpHysteresisLevel2;
-
-    ACMP_Init(ACMP0, &acmp_init);
+    ACMP_Init(ACMP0, &acmpInit);
 
     /* Set the ACMP channel */
 
     ACMP_ChannelSet(ACMP0, acmpChannelVDD, acmpChannel0);
 
-    /* Wait for warm up */
+}
 
-    while (!(ACMP0->STATUS & ACMP_STATUS_ACMPACT)) {};
+static inline void updateBatteryMonitorThresholdLevel(uint32_t level) {
+
+    /* Disable ACMP */
+
+    ACMP_Disable(ACMP0);
+
+    /* Set new threshold value */
+
+    level = MAX(MINIMIMUM_COMPARATOR_LEVEL, MIN(MAXIMIMUM_COMPARATOR_LEVEL, level));
+
+    ACMP0->INPUTSEL = (ACMP0->INPUTSEL & ~(_ACMP_INPUTSEL_VDDLEVEL_MASK)) | (level << _ACMP_INPUTSEL_VDDLEVEL_SHIFT);
+
+    /* Enable and wait until ready */
+
+    ACMP_Enable(ACMP0);
+
+    while (!(ACMP0->STATUS & ACMP_STATUS_ACMPACT)) { };
 
 }
 
-bool AudioMoth_isBatteryMonitorAboveThreshold() {
+void AudioMoth_setBatteryMonitorThreshold(uint32_t batteryVoltage, uint32_t supplyVoltage) {
+
+    uint32_t level = ROUNDED_DIV(MAXIMIMUM_COMPARATOR_LEVEL * batteryVoltage / BATTERY_MONITOR_DIVIDER, supplyVoltage);
+
+    updateBatteryMonitorThresholdLevel(level);
+
+}
+
+bool AudioMoth_isBatteryAboveThreshold() {
 
     return (ACMP0->STATUS & ACMP_STATUS_ACMPOUT);
 
@@ -1368,41 +1583,161 @@ void AudioMoth_disableBatteryMonitor() {
 
     ACMP_Disable(ACMP0);
 
-    /* Disable comparator clock*/
+    /* Disable ACMP clock */
 
     CMU_ClockEnable(cmuClock_ACMP0, false);
 
-    /* Turn Battery Monitor off*/
+    /* Disable battery monitor pin */
 
     GPIO_PinOutClear(BAT_MON_GPIOPORT, BAT_MON_EN);
 
 }
 
-AM_batteryState_t AudioMoth_getBatteryState() {
+/* Functions to handle supply voltage and battery voltage / state reporting */
+
+uint32_t AudioMoth_getSupplyVoltage() {
+
+    /* Enable supply monitor */
+
+    AudioMoth_enableSupplyMonitor();
+
+    /* Find level at which supply voltage exceeds threshold */
+
+    uint32_t level = MAXIMIMUM_SUPPLY_MONITOR_LEVEL;
+
+    while (level > MINIMIMUM_SUPPLY_MONITOR_LEVEL) {
+
+        updateSupplyMonitorThresholdLevel(level);
+
+        if (AudioMoth_isSupplyAboveThreshold()) break;
+
+        level -= 1;
+    }
+
+    /* Disable supply monitor */
+
+    AudioMoth_disableSupplyMonitor();
+
+    /* Calculate voltage midway between levels */
+
+    uint32_t supplyVoltage = VCMP_VOLTAGE_OFFSET + level * VCMP_VOLTAGE_INCREMENT + VCMP_VOLTAGE_INCREMENT / 2;
+
+    return supplyVoltage;
+
+}
+
+AM_extendedBatteryState_t AudioMoth_getExtendedBatteryState(uint32_t supplyVoltage) {
+
+    /* Enable battery monitor */
 
     AudioMoth_enableBatteryMonitor();
 
-    AM_batteryState_t batteryState = AM_BATTERY_LOW;
+    /* Find level at which battery voltage exceeds threshold */
 
-    while (batteryState < AM_BATTERY_FULL) {
+    uint32_t batteryVoltage = MAXIMIMUM_BATTERY_MONITOR_VOLTAGE;
 
-        AudioMoth_setBatteryMonitorThreshold(batteryState);
+    AM_extendedBatteryState_t extendedBatteryState = AM_EXT_BAT_FULL;
 
-		if (!AudioMoth_isBatteryMonitorAboveThreshold()) {
+    while (extendedBatteryState > AM_EXT_BAT_LOW) {
 
-		    break;
+        AudioMoth_setBatteryMonitorThreshold(batteryVoltage, supplyVoltage);
 
-		}
+        if (AudioMoth_isBatteryAboveThreshold()) break;
 
-		batteryState += 1;
+        extendedBatteryState -= 1;
 
-	}
+        batteryVoltage -= AM_BATTERY_STATE_INCREMENT;
+
+    }
+
+    /* Disable battery monitor */
 
     AudioMoth_disableBatteryMonitor();
 
-	return batteryState;
+    /* Return battery state */
+
+    return extendedBatteryState;
 
 }
+
+AM_batteryState_t AudioMoth_getBatteryState(uint32_t supplyVoltage) {
+
+    AM_extendedBatteryState_t extendedBatteryState = AudioMoth_getExtendedBatteryState(supplyVoltage);
+
+    AM_batteryState_t batteryState = extendedBatteryState < AM_EXT_BAT_3V6 ? AM_BATTERY_LOW : extendedBatteryState - (AM_BATTERY_STATE_OFFSET - AM_EXT_BAT_STATE_OFFSET) / AM_BATTERY_STATE_INCREMENT;
+
+    return batteryState;
+
+}
+
+/* Functions to handle temperature monitoring */
+
+void AudioMoth_enableTemperature() {
+
+    /* Enable ADC clock */
+
+    CMU_ClockEnable(cmuClock_ADC0, true);
+
+    /* Initialise ADC */
+
+    ADC_Init_TypeDef adcInit = ADC_INIT_DEFAULT;
+
+    adcInit.ovsRateSel = adcOvsRateSel16;
+    adcInit.timebase = ADC_TimebaseCalc(0);
+    adcInit.prescale = ADC_PrescaleCalc(400000, 0);
+
+    ADC_Init(ADC0, &adcInit);
+
+    /* Initialise ADC for single measurement */
+
+    ADC_InitSingle_TypeDef adcSingleInit = ADC_INITSINGLE_DEFAULT;
+
+    adcSingleInit.reference = adcRef1V25;
+    adcSingleInit.acqTime = adcAcqTime32;
+    adcSingleInit.input = adcSingleInpTemp;
+
+    ADC_InitSingle(ADC0, &adcSingleInit);
+
+}
+
+void AudioMoth_disableTemperature() {
+
+    /* Reset ADC */
+
+    ADC_Reset(ADC0);
+
+    /* Disable ADC clock */
+
+    CMU_ClockEnable(cmuClock_ADC0, false);
+
+}
+
+int32_t AudioMoth_getTemperature() {
+
+    /* Start ADC measurement and wait for completion */
+
+    ADC_Start(ADC0, adcStartSingle);
+
+    while (ADC0->STATUS & ADC_STATUS_SINGLEACT) { };
+
+    /* Calculate temperature */
+
+    int32_t adcSample = ADC_DataSingleGet(ADC0);
+
+    uint32_t CAL_TEMP_0 = ((DEVINFO->CAL & _DEVINFO_CAL_TEMP_MASK) >> _DEVINFO_CAL_TEMP_SHIFT);
+
+    if ((CAL_TEMP_0 == 0xFF) || (CAL_TEMP_0 == 0xFFF)) return -100000;
+
+    int32_t ADC0_TEMP_0_READ_1V25 = ((DEVINFO->ADC0CAL2 & _DEVINFO_ADC0CAL2_TEMP1V25_MASK) >> _DEVINFO_ADC0CAL2_TEMP1V25_SHIFT);
+
+    int32_t temperature = MILLIDEGREES_IN_DEGREE * CAL_TEMP_0;
+
+    temperature += ROUNDED_DIV(MILLIDEGREES_IN_DEGREE * GRADIENT_MULTIPLIER * (ADC0_TEMP_0_READ_1V25 - adcSample), TEMPERATURE_GRADIENT);
+
+    return temperature;
+
+}
+
 
 /* Function to query the switch position */
 
@@ -1544,13 +1879,13 @@ void AudioMoth_getTime(uint32_t *time, uint16_t *milliseconds) {
 
 static void setupWatchdogTimer(void) {
 
-    WDOG_Init_TypeDef init = WDOG_INIT_DEFAULT;
+    WDOG_Init_TypeDef wdogInit = WDOG_INIT_DEFAULT;
 
-    init.em2Run = true;
-    init.em3Run = true;
-    init.perSel = wdogPeriod_64k;
+    wdogInit.em2Run = true;
+    wdogInit.em3Run = true;
+    wdogInit.perSel = wdogPeriod_64k;
 
-    WDOG_Init(&init);
+    WDOG_Init(&wdogInit);
 
 }
 
@@ -1659,6 +1994,10 @@ bool AudioMoth_enableFileSystem(void) {
 
 void AudioMoth_disableFileSystem(void) {
 
+    /* Disable the SD card pins */
+
+    MICROSD_Deinit();
+
     /* Turn SD card off*/
 
     GPIO_PinOutSet(SDEN_GPIOPORT, SD_ENABLE_N);
@@ -1669,7 +2008,7 @@ bool AudioMoth_openFile(char *filename) {
 
     /* Open a file for writing. Overwrite existing file with the same name */
 
-    FRESULT res = f_open(&file, filename,  FA_CREATE_ALWAYS | FA_WRITE);
+    FRESULT res = f_open(&file, filename,  FA_CREATE_ALWAYS | FA_WRITE | FA_READ);
 
     if (res != FR_OK) {
         return false;
@@ -1683,7 +2022,7 @@ bool AudioMoth_appendFile(char *filename) {
 
     /* Open the file for writing. Append existing file with the same name */
 
-    FRESULT res = f_open(&file, filename,  FA_OPEN_ALWAYS | FA_WRITE);
+    FRESULT res = f_open(&file, filename,  FA_OPEN_ALWAYS | FA_WRITE | FA_READ);
 
     if (res != FR_OK) {
         return false;
@@ -1714,7 +2053,7 @@ bool AudioMoth_openFileToRead(char *filename) {
 
 bool AudioMoth_readFile(char *buffer, uint32_t bufferSize) {
 
-    FRESULT res = f_read (&file, buffer, bufferSize, &bw);
+    FRESULT res = f_read(&file, buffer, bufferSize, &bw);
 
     if (res != FR_OK) {
         return false;
@@ -1851,38 +2190,38 @@ static void enableEBI(void) {
 
     /* Configure EBI controller, changing default values */
 
-    EBI_Init_TypeDef ebiConfig = EBI_INIT_DEFAULT;
+    EBI_Init_TypeDef ebiInit = EBI_INIT_DEFAULT;
 
-    ebiConfig.mode = ebiModeD8A8;
-    ebiConfig.banks = EBI_BANK0;
-    ebiConfig.csLines = EBI_CS0 | EBI_CS1;
-    ebiConfig.readHalfRE = true;
+    ebiInit.mode = ebiModeD8A8;
+    ebiInit.banks = EBI_BANK0;
+    ebiInit.csLines = EBI_CS0 | EBI_CS1;
+    ebiInit.readHalfRE = true;
 
-    ebiConfig.aLow = ebiALowA8;
-    ebiConfig.aHigh = ebiAHighA18;
+    ebiInit.aLow = ebiALowA8;
+    ebiInit.aHigh = ebiAHighA18;
 
     /* Address Setup and hold time */
 
-    ebiConfig.addrHoldCycles  = 0;
-    ebiConfig.addrSetupCycles = 0;
+    ebiInit.addrHoldCycles  = 0;
+    ebiInit.addrSetupCycles = 0;
 
     /* Read cycle times */
 
-    ebiConfig.readStrobeCycles = 3;
-    ebiConfig.readHoldCycles   = 1;
-    ebiConfig.readSetupCycles  = 2;
+    ebiInit.readStrobeCycles = 3;
+    ebiInit.readHoldCycles   = 1;
+    ebiInit.readSetupCycles  = 2;
 
     /* Write cycle times */
 
-    ebiConfig.writeStrobeCycles = 6;
-    ebiConfig.writeHoldCycles   = 0;
-    ebiConfig.writeSetupCycles  = 0;
+    ebiInit.writeStrobeCycles = 6;
+    ebiInit.writeHoldCycles   = 0;
+    ebiInit.writeSetupCycles  = 0;
 
-    ebiConfig.location = ebiLocation1;
+    ebiInit.location = ebiLocation1;
 
     /* Configure EBI */
 
-    EBI_Init(&ebiConfig);
+    EBI_Init(&ebiInit);
 
 }
 
