@@ -13,13 +13,15 @@
 #include "em_cmu.h"
 #include "em_dma.h"
 #include "em_emu.h"
-#include "em_prs.h"
 #include "em_ebi.h"
+#include "em_msc.h"
+#include "em_prs.h"
 #include "em_rmu.h"
 #include "em_rtc.h"
 #include "em_usb.h"
 #include "em_acmp.h"
 #include "em_chip.h"
+#include "em_core.h"
 #include "em_gpio.h"
 #include "em_vcmp.h"
 #include "em_wdog.h"
@@ -42,10 +44,11 @@
 
 /* Time constants */
 
-#define MILLISECONDS_IN_SECOND                    1000
 #define AM_LFXO_TICKS_PER_SECOND                  32768
 #define AM_BURTC_TICKS_PER_SECOND                 1024
-#define AM_MINIMUM_POWER_DOWN_TIME                16
+#define AM_MINIMUM_POWER_DOWN_TIME                64
+
+#define MILLISECONDS_IN_SECOND                    1000
 
 /* USB EM2 wake constant */
 
@@ -126,6 +129,10 @@
 
 #define ROUNDED_DIV(a, b)                         (((a) + (b/2)) / (b))
 
+/* Hardware type enumeration */
+
+typedef enum {AM_VERSION_1, AM_VERSION_2, AM_VERSION_3} AM_hardwareVersion_t;
+
 /* USB buffers */
 
 STATIC_UBUF(receiveBuffer, 2 * AM_USB_BUFFERSIZE);
@@ -160,6 +167,7 @@ static void setupBackupDomain(void);
 static void setupWatchdogTimer(void);
 static void handleTimeOverflow(void);
 static void setupOpAmp(uint32_t gain);
+static void senseHardwareVersion(void);
 static void enablePrsTimer(uint32_t samplerate);
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 
@@ -213,6 +221,10 @@ void AudioMoth_initialise() {
 
         setupBackupRTC();
 
+        /* Sense the hardware version */
+
+        senseHardwareVersion();
+
         /* Clear the time set flag and the counter */
 
         BURTC_RetRegSet(AM_BURTC_CLOCK_SET_FLAG, 0);
@@ -261,13 +273,13 @@ void AudioMoth_initialise() {
 
     /* Enable interrupt on USB switch position to wake from EM2 */
 
-    GPIO_PinModeSet(USB_GPIOPORT, USB_PIN, gpioModeInput, 0);
+    GPIO_PinModeSet(SWITCH_1_GPIOPORT, SWITCH_1_SENSE, gpioModeInput, 0);
 
-    GPIO_PinModeSet(SWITCH_GPIOPORT, SWITCH_PIN, gpioModeInput, 0);
+    GPIO_PinModeSet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE, gpioModeInput, 0);
 
-    GPIO_IntConfig(USB_GPIOPORT, USB_PIN, true, true, true);
+    GPIO_IntConfig(SWITCH_1_GPIOPORT, SWITCH_1_SENSE, true, true, true);
 
-    GPIO_IntConfig(SWITCH_GPIOPORT, SWITCH_PIN, true, true, true);
+    GPIO_IntConfig(SWITCH_2_GPIOPORT, SWITCH_2_SENSE, true, true, true);
 
     NVIC_ClearPendingIRQ(GPIO_EVEN_IRQn);
 
@@ -335,51 +347,6 @@ void AudioMoth_disableHFRCO(void) {
 
 }
 
-void AudioMoth_calibrateHFRCO(uint32_t frequency) {
-
-    /* Set up initial limits for binary search */
-
-    uint32_t lower = 0x00;
-    uint32_t upper = 0xFF;
-
-    uint32_t mid = CMU_OscillatorTuningGet(cmuOsc_HFRCO);
-
-    /* Calculate expected number of up cycles */
-
-    uint32_t downCycles = 0xC000;
-
-    uint32_t targetUpCycles = (float)downCycles * (float)frequency / (float)CMU_ClockFreqGet(cmuClock_HF);
-
-    /* Main binary search */
-
-    while (lower < upper) {
-
-        uint32_t actualUpCycles = CMU_Calibrate(downCycles, cmuOsc_HFRCO);
-
-        if (actualUpCycles > targetUpCycles) {
-
-            /* HFRCO is running too fast, search next in lower half */
-
-            upper = mid - 1;
-
-        } else {
-
-            /* HFRCO is running too slow, search next in upper half */
-
-            lower = mid + 1;
-
-        }
-
-        /* Calculate and set next mid point */
-
-        mid = (upper + lower) / 2;
-
-        CMU_OscillatorTuningSet(cmuOsc_HFRCO, mid);
-
-    }
-
-}
-
 uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency) {
 
     switch (frequency) {
@@ -419,13 +386,19 @@ void RTC_IRQHandler(void) {
 
 void GPIO_EVEN_IRQHandler(void) {
 
+    /* Get the interrupt mask */
+
+    uint32_t interruptMask = GPIO_IntGet();
+
     /* Clear the GPIO interrupt flag */
 
     GPIO_IntClear(GPIO_IntGet());
 
     /* Call the interrupt handler */
 
-    AudioMoth_handleSwitchInterrupt();
+    if (interruptMask & ((1 << SWITCH_1_SENSE) | (1 << SWITCH_2_SENSE))) AudioMoth_handleSwitchInterrupt();
+
+    if (interruptMask & (1 << JCK_DETECT)) AudioMoth_handleMicrophoneChangeInterrupt();
 
 }
 
@@ -626,19 +599,47 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
 }
 
-void AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
+bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
 
-    /* Enable microphone and VREF power */
+    /* Check for external microphone */
 
-    GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_EN_N);
+    bool externalMicrophone = false;
 
-    GPIO_PinOutSet(VREF_GPIOPORT, VREF_EN);
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion > AM_VERSION_1) {
+
+        GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
+
+        GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, true);
+
+        externalMicrophone = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
+
+    }
+
+    /* Enable microphone power */
+
+    if (externalMicrophone) {
+
+        GPIO_PinOutClear(JCK_GPIOPORT, JCK_ENABLE_N);
+
+    } else {
+
+        GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
+
+    }
+
+    /* Enable VREF power */
+
+    GPIO_PinOutSet(VREF_GPIOPORT, VREF_ENABLE);
 
     /* Set up amplifier stage and the ADC */
 
     setupOpAmp(gain);
 
     setupADC(clockDivider, acquisitionCycles, oversampleRate);
+
+    return externalMicrophone;
 
 }
 
@@ -658,11 +659,23 @@ void AudioMoth_disableMicrophone(void) {
 
     DMA_Reset();
 
-    /* Disable microphone and VREF power */
+    /* Disable internal microphone */
 
-    GPIO_PinOutSet(VMIC_GPIOPORT, VMIC_EN_N);
+    GPIO_PinOutSet(VMIC_GPIOPORT, VMIC_ENABLE_N);
 
-    GPIO_PinOutClear(VREF_GPIOPORT, VREF_EN);
+    /* Disable external microphone */
+
+    GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, false);
+
+    GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion > AM_VERSION_1) GPIO_PinOutSet(JCK_GPIOPORT, JCK_ENABLE_N);
+
+    /* Disable VREF power */
+
+    GPIO_PinOutClear(VREF_GPIOPORT, VREF_ENABLE);
 
     /* Stop the clocks */
 
@@ -693,24 +706,6 @@ void AudioMoth_disableExternalSRAM(void) {
     /* Enable the external bus interface */
 
     disableEBI();
-
-}
-
-uint32_t AudioMoth_calculateSampleRate(uint32_t frequency, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
-
-    if (acquisitionCycles != 16 && acquisitionCycles != 8 && acquisitionCycles != 4 && acquisitionCycles != 2)  acquisitionCycles = 1;
-
-    if (oversampleRate != 128 && oversampleRate != 64 && oversampleRate != 32 && oversampleRate != 16 && oversampleRate != 8 && oversampleRate != 4 && oversampleRate != 2) oversampleRate = 1;
-
-    if (clockDivider > 128) clockDivider = 128;
-
-    if (clockDivider < 1)  clockDivider = 1;
-
-    uint32_t numerator = frequency / clockDivider;
-
-    uint32_t denominator = 2 + (acquisitionCycles + 12) * oversampleRate;
-
-    return numerator / denominator;
 
 }
 
@@ -872,13 +867,13 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
 /* Function to implement a sleeping delay */
 
-void AudioMoth_delay(uint16_t milliseconds) {
+void AudioMoth_delay(uint32_t milliseconds) {
 
     /* Ensure the delay period wont cause the counter to overflow and calculate clock ticks to wait */
 
     if (milliseconds == 0)  return;
 
-    if (milliseconds > 1000) milliseconds = 1000;
+    if (milliseconds > MILLISECONDS_IN_SECOND) milliseconds = MILLISECONDS_IN_SECOND;
 
     /* Enable clock for TIMER1 */
 
@@ -906,7 +901,7 @@ void AudioMoth_delay(uint16_t milliseconds) {
 
     delayTimmerRunning = true;
 
-    uint32_t clockTicksToWait = (CMU_ClockFreqGet(cmuClock_HF) >> timerPrescale1024) * milliseconds / 1000;
+    uint32_t clockTicksToWait = ROUNDED_DIV((CMU_ClockFreqGet(cmuClock_HF) >> timerPrescale1024) * milliseconds, MILLISECONDS_IN_SECOND);
 
     TIMER_TopSet(TIMER1, clockTicksToWait);
 
@@ -921,6 +916,8 @@ void AudioMoth_delay(uint16_t milliseconds) {
     }
 
     /* Disable interrupt and reset TIMER1 */
+
+    TIMER_IntDisable(TIMER1, TIMER_IF_OF);
 
     NVIC_DisableIRQ(TIMER1_IRQn);
 
@@ -962,7 +959,7 @@ void AudioMoth_powerDown() {
 
 }
 
-void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
+void AudioMoth_powerDownAndWakeMilliseconds(uint32_t milliseconds) {
 
     /* Put GPIO pins in power down state */
 
@@ -980,15 +977,55 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
     uint32_t counterValueToMatch = BURTC_CounterGet();
 
-    if (seconds == 0) {
+    uint32_t period = ROUNDED_DIV(milliseconds * AM_BURTC_TICKS_PER_SECOND, MILLISECONDS_IN_SECOND);
 
-        counterValueToMatch += AM_MINIMUM_POWER_DOWN_TIME;
+    counterValueToMatch += MAX(AM_MINIMUM_POWER_DOWN_TIME, period);
+
+    BURTC_CompareSet(0, counterValueToMatch);
+
+    /* Enable compare interrupt flag */
+
+    BURTC_IntEnable(BURTC_IF_COMP0);
+
+    /* Enter EM4 */
+
+    EMU_EnterEM4();
+
+    while (1) { };
+
+}
+
+void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
+
+    if (synchronised == false) {
+
+        AudioMoth_powerDownAndWakeMilliseconds(seconds * MILLISECONDS_IN_SECOND);
 
     } else {
 
-        counterValueToMatch += seconds * AM_BURTC_TICKS_PER_SECOND;
+        /* Put GPIO pins in power down state */
 
-        if (synchronised) {
+        setupGPIO();
+
+        /* Disable watch dog timer */
+
+        WDOG_Enable(false);
+
+        /* CLear BURTC comparison flag */
+
+        BURTC_IntClear(BURTC_IF_COMP0);
+
+        /* Calculate new comparison value */
+
+        uint32_t counterValueToMatch = BURTC_CounterGet();
+
+        if (seconds == 0) {
+
+            counterValueToMatch += AM_MINIMUM_POWER_DOWN_TIME;
+
+        } else {
+
+            counterValueToMatch += seconds * AM_BURTC_TICKS_PER_SECOND;
 
             uint32_t offset = counterValueToMatch % AM_BURTC_TICKS_PER_SECOND;
 
@@ -1002,19 +1039,19 @@ void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised) {
 
         }
 
+        BURTC_CompareSet(0, counterValueToMatch);
+
+        /* Enable compare interrupt flag */
+
+        BURTC_IntEnable(BURTC_IF_COMP0);
+
+        /* Enter EM4 */
+
+        EMU_EnterEM4();
+
+        while (1) { };
+
     }
-
-    BURTC_CompareSet(0, counterValueToMatch);
-
-    /* Enable compare interrupt flag */
-
-    BURTC_IntEnable(BURTC_IF_COMP0);
-
-    /* Enter EM4 */
-
-    EMU_EnterEM4();
-
-    while (1) { };
 
 }
 
@@ -1446,6 +1483,52 @@ void AudioMoth_handleUSB(void) {
 
 }
 
+/* Function to handle hardware version sensing */
+
+static void senseHardwareVersion() {
+
+   /* Enable ADC clock */
+
+   CMU_ClockEnable(cmuClock_ADC0, true);
+
+   /* Initialise ADC */
+
+   ADC_Init_TypeDef init = ADC_INIT_DEFAULT;
+
+   ADC_Init(ADC0, &init);
+
+   /* Initialise ADC for single measurement */
+
+   ADC_InitSingle_TypeDef singleInit = ADC_INITSINGLE_DEFAULT;
+
+   singleInit.input = adcSingleInpCh5;
+   singleInit.reference = adcRefVDD;
+   singleInit.acqTime = adcAcqTime32;
+
+   ADC_InitSingle(ADC0, &singleInit);
+
+   /* Perform conversion */
+
+   ADC_Start(ADC0, adcStartSingle);
+
+   while (ADC0->STATUS & ADC_STATUS_SINGLEACT) { };
+
+   uint32_t value = ADC_DataSingleGet(ADC0);
+
+   /* Reset ADC */
+
+   ADC_Reset(ADC0);
+
+   /* Disable ADC clock */
+
+   CMU_ClockEnable(cmuClock_ADC0, false);
+
+   /* Set the hardware version */
+
+   BURTC_RetRegSet(AM_BURTC_HARDWARE_VERSION, value < 256 ? AM_VERSION_1 : value < 512 ? AM_VERSION_2 : AM_VERSION_3);
+
+}
+
 /* Functions to handle supply voltage monitoring */
 
 void AudioMoth_enableSupplyMonitor() {
@@ -1520,7 +1603,7 @@ void AudioMoth_enableBatteryMonitor() {
 
     /* Enable battery monitor pin */
 
-    GPIO_PinOutSet(BAT_MON_GPIOPORT, BAT_MON_EN);
+    GPIO_PinOutSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE);
 
     /* Initialise the ACMP */
 
@@ -1589,7 +1672,7 @@ void AudioMoth_disableBatteryMonitor() {
 
     /* Disable battery monitor pin */
 
-    GPIO_PinOutClear(BAT_MON_GPIOPORT, BAT_MON_EN);
+    GPIO_PinOutClear(BAT_MON_GPIOPORT, BAT_MON_ENABLE);
 
 }
 
@@ -1743,21 +1826,23 @@ int32_t AudioMoth_getTemperature() {
 
 AM_switchPosition_t AudioMoth_getSwitchPosition(void) {
 
-    /* Test conditions */
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
-    if (GPIO_PinInGet(USB_GPIOPORT, USB_PIN) == 1) {
+    if (GPIO_PinInGet(SWITCH_1_GPIOPORT, SWITCH_1_SENSE) == 0) return AM_SWITCH_DEFAULT;
+
+    if (hardwareVersion < AM_VERSION_3) {
+
+        if (GPIO_PinInGet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE) == 1)  return AM_SWITCH_USB;
+
+        return AM_SWITCH_CUSTOM;
+
+    } else {
+
+        if (GPIO_PinInGet(SWITCH_2_GPIOPORT, SWITCH_2_SENSE) == 1)  return AM_SWITCH_CUSTOM;
 
         return AM_SWITCH_USB;
 
     }
-
-    if (GPIO_PinInGet(SWITCH_GPIOPORT, SWITCH_PIN) == 0) {
-
-        return AM_SWITCH_DEFAULT;
-
-    }
-
-    return AM_SWITCH_CUSTOM;
 
 }
 
@@ -1787,6 +1872,36 @@ uint32_t AudioMoth_retreiveFromBackupDomain(uint32_t number) {
 
 }
 
+/* Functions to handle access to the flash user data page */
+
+SL_RAMFUNC_DEFINITION_BEGIN
+bool AudioMoth_writeToFlashUserDataPage(uint8_t *data, uint32_t length) {
+
+    CORE_DECLARE_IRQ_STATE;
+
+    CORE_ENTER_ATOMIC();
+
+    MSC->LOCK = MSC_UNLOCK_CODE;
+
+    MSC_Init();
+
+    MSC_Status_TypeDef status = MSC_ErasePage((uint32_t*)AM_FLASH_USER_DATA_ADDRESS);
+
+    if (status == mscReturnOk) {
+
+        status = MSC_WriteWord((uint32_t*)AM_FLASH_USER_DATA_ADDRESS, data, length);
+
+    }
+
+    MSC->LOCK = 0;
+
+    CORE_EXIT_ATOMIC();
+
+    return status == mscReturnOk;
+
+}
+SL_RAMFUNC_DEFINITION_END
+
 /* Functions to handle setting and querying of time */
 
 bool AudioMoth_hasTimeBeenSet(void) {
@@ -1795,9 +1910,9 @@ bool AudioMoth_hasTimeBeenSet(void) {
 
 }
 
-static void setTime(uint32_t time, uint16_t milliseconds) {
+static void setTime(uint32_t time, uint32_t milliseconds) {
 
-    uint32_t ticks = (AM_BURTC_TICKS_PER_SECOND * (uint32_t)milliseconds) / MILLISECONDS_IN_SECOND;
+    uint32_t ticks = ROUNDED_DIV(AM_BURTC_TICKS_PER_SECOND * milliseconds, MILLISECONDS_IN_SECOND);
 
     uint64_t intendedCounter = AM_BURTC_TICKS_PER_SECOND * (uint64_t)time + ticks;
 
@@ -1811,7 +1926,7 @@ static void setTime(uint32_t time, uint16_t milliseconds) {
 
 }
 
-static void getTime(uint32_t *time, uint16_t *milliseconds) {
+static void getTime(uint32_t *time, uint32_t *milliseconds) {
 
     uint64_t offset =  (uint64_t)BURTC_RetRegGet(AM_BURTC_TIME_OFFSET_HIGH) << 32;
 
@@ -1829,7 +1944,7 @@ static void getTime(uint32_t *time, uint16_t *milliseconds) {
 
         uint32_t ticks = currentCounter % AM_BURTC_TICKS_PER_SECOND;
 
-        *milliseconds = (uint16_t)(MILLISECONDS_IN_SECOND * ticks / AM_BURTC_TICKS_PER_SECOND);
+        *milliseconds = ROUNDED_DIV(MILLISECONDS_IN_SECOND * ticks, AM_BURTC_TICKS_PER_SECOND);
 
     }
 
@@ -1843,7 +1958,7 @@ static void handleTimeOverflow(void) {
 
 }
 
-void AudioMoth_setTime(uint32_t time, uint16_t milliseconds) {
+void AudioMoth_setTime(uint32_t time, uint32_t milliseconds) {
 
     setTime(time, milliseconds);
 
@@ -1859,7 +1974,7 @@ void AudioMoth_setTime(uint32_t time, uint16_t milliseconds) {
 
 }
 
-void AudioMoth_getTime(uint32_t *time, uint16_t *milliseconds) {
+void AudioMoth_getTime(uint32_t *time, uint32_t *milliseconds) {
 
     getTime(time, milliseconds);
 
@@ -1945,20 +2060,20 @@ DWORD get_fattime(void) {
 
 void AudioMoth_setRedLED(bool state) {
 
-    GPIO_PinModeSet(LED_GPIOPORT, RED_PIN, gpioModePushPull, state);
+    GPIO_PinModeSet(LED_GPIOPORT, RED_LED, gpioModePushPull, state);
 
 }
 
 void AudioMoth_setBothLED(bool state) {
 
-    GPIO_PinModeSet(LED_GPIOPORT, RED_PIN, gpioModePushPull, state);
-    GPIO_PinModeSet(LED_GPIOPORT, GREEN_PIN, gpioModePushPull, state);
+    GPIO_PinModeSet(LED_GPIOPORT, RED_LED, gpioModePushPull, state);
+    GPIO_PinModeSet(LED_GPIOPORT, GREEN_LED, gpioModePushPull, state);
 
 }
 
 void AudioMoth_setGreenLED(bool state) {
 
-    GPIO_PinModeSet(LED_GPIOPORT, GREEN_PIN, gpioModePushPull, state);
+    GPIO_PinModeSet(LED_GPIOPORT, GREEN_LED, gpioModePushPull, state);
 
 }
 
@@ -2280,6 +2395,8 @@ static void disableEBI(void) {
 
 static void setupGPIO(void) {
 
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
 	/* GPIO A */
 
 	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD09, gpioModeDisabled, 0);
@@ -2293,10 +2410,10 @@ static void setupGPIO(void) {
 	GPIO_PinModeSet(gpioPortA, 8, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortA, 9, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortA, 10, gpioModeDisabled, 0);
-	GPIO_PinModeSet(VREF_GPIOPORT, VREF_EN, gpioModePushPull, 0);
+	GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModePushPull, 0);
 	GPIO_PinModeSet(gpioPortA, 12, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortA, 13, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortA, 14, gpioModeDisabled, 0);
+	GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, 0);
 
 	/* GPIO B */
@@ -2317,7 +2434,8 @@ static void setupGPIO(void) {
 
 	GPIO_PinModeSet(gpioPortC, 0, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortC, 1, gpioModeDisabled, 0);
-	GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_EN, gpioModePushPull, 0);
+	GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModePushPull, 0);
+	GPIO_PinModeSet(gpioPortC, 7, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModeDisabled, 0);
@@ -2329,7 +2447,7 @@ static void setupGPIO(void) {
 	GPIO_PinModeSet(gpioPortD, 2, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 3, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 4, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortD, 5, gpioModeDisabled, 0);
+	GPIO_PinModeSet(VERSION_CONTROL_GPIOPORT, VERSION_CONTROL, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, 0);
 	GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModePushPull, 1);
@@ -2337,9 +2455,15 @@ static void setupGPIO(void) {
 
 	/* GPIO E */
 
-	GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_EN_N, gpioModePushPull, 1);
+	GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModePushPull, 1);
 	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModeDisabled, 0);
-	GPIO_PinModeSet(gpioPortE, 2, gpioModeDisabled, 0);
+
+    if (hardwareVersion > AM_VERSION_1) {
+        GPIO_PinModeSet(JCK_GPIOPORT, JCK_ENABLE_N, gpioModePushPull, 1);
+    } else {
+        GPIO_PinModeSet(JCK_GPIOPORT, JCK_ENABLE_N, gpioModeDisabled, 0);
+    }
+
 	GPIO_PinModeSet(gpioPortE, 3, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A11, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A12, gpioModeDisabled, 0);

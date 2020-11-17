@@ -10,28 +10,28 @@
 /* Voltage reference power */
 
 #define VREF_GPIOPORT                           gpioPortA
-#define VREF_EN                                 11
+#define VREF_ENABLE                             11
 
 /* Battery monitor */
 
 #define BAT_MON_GPIOPORT                        gpioPortC
-#define BAT_MON_EN                              3
+#define BAT_MON_ENABLE                          3
 
 /* Red and green LED */
 
 #define LED_GPIOPORT                            gpioPortC
-#define GREEN_PIN                               5
-#define RED_PIN                                 4
+#define GREEN_LED                               5
+#define RED_LED                                 4
 
-/* Switch (DEFAULT) position */
+/* Switch 1 sense */
 
-#define SWITCH_GPIOPORT                         gpioPortC
-#define SWITCH_PIN                              6
+#define SWITCH_1_GPIOPORT                       gpioPortC
+#define SWITCH_1_SENSE                          6
 
-/* Switch (USB) position */
+/* Switch 2 position */
 
-#define USB_GPIOPORT                            gpioPortD
-#define USB_PIN                                 8
+#define SWITCH_2_GPIOPORT                       gpioPortD
+#define SWITCH_2_SENSE                          8
 
 /* SRAM power */
 
@@ -43,10 +43,25 @@
 #define SDEN_GPIOPORT                           gpioPortD
 #define SD_ENABLE_N                             12
 
-/* Microphone power */
+/* Internal microphone power */
 
 #define VMIC_GPIOPORT                           gpioPortE
-#define VMIC_EN_N                               0
+#define VMIC_ENABLE_N                           0
+
+/* External microphone power */
+
+#define JCK_GPIOPORT                            gpioPortE
+#define JCK_ENABLE_N                            2
+
+/* External microphone sense */
+
+#define JCK_DETECT_GPIOPORT                     gpioPortA
+#define JCK_DETECT                              14
+
+/* Version control sense */
+
+#define VERSION_CONTROL_GPIOPORT                gpioPortD
+#define VERSION_CONTROL                         5
 
 /* USB data */
 

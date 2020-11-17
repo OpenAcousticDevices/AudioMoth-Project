@@ -4,6 +4,9 @@
  * June 2017
  *****************************************************************************/
 
+#ifndef __AUDIOMOTH_H
+#define __AUDIOMOTH_H
+
 #include <stdint.h>
 #include <stdbool.h>
 
@@ -16,7 +19,11 @@
 #define AM_EXTERNAL_SRAM_SIZE_IN_BYTES         (256 * 1024)
 
 #define AM_BACKUP_DOMAIN_START_ADDRESS         0x40081120
+#define AM_BACKUP_DOMAIN_SIZE_IN_REGISTERS     120
 #define AM_BACKUP_DOMAIN_SIZE_IN_BYTES         480
+
+#define AM_FLASH_USER_DATA_ADDRESS             0xFE00000
+#define AM_FLASH_USER_SIZE_IN_BYTES            2024
 
 #define AM_UNIQUE_ID_START_ADDRESS             0xFE081F0
 #define AM_UNIQUE_ID_SIZE_IN_BYTES             8
@@ -25,7 +32,7 @@
 #define AM_EXT_BAT_STATE_OFFSET                2400
 #define AM_BATTERY_STATE_INCREMENT             100
 
-/* Switch and battery state enumerations */
+/* Switch, frequency and battery state enumerations */
 
 typedef enum {AM_SWITCH_CUSTOM, AM_SWITCH_DEFAULT, AM_SWITCH_USB, AM_SWITCH_NONE} AM_switchPosition_t;
 
@@ -46,6 +53,7 @@ extern void AudioMoth_timezoneRequested(int8_t *timezoneHours, int8_t *timezoneM
 /* Interrupt handlers */
 
 extern void AudioMoth_handleSwitchInterrupt(void);
+extern void AudioMoth_handleMicrophoneChangeInterrupt(void);
 extern void AudioMoth_handleMicrophoneInterrupt(int16_t sample);
 extern void AudioMoth_handleDirectMemoryAccessInterrupt(bool isPrimaryBuffer, int16_t **nextBuffer);
 
@@ -72,8 +80,6 @@ void AudioMoth_enableHFRCO(AM_clockFrequency_t frequency);
 void AudioMoth_selectHFRCO(void);
 void AudioMoth_disableHFRCO(void);
 
-void AudioMoth_calibrateHFRCO(uint32_t frequency);
-
 uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency);
 
 /* External SRAM control */
@@ -88,9 +94,7 @@ void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 void AudioMoth_initialiseMicrophoneInterupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
 
-uint32_t AudioMoth_calculateSampleRate(uint32_t frequency, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
-
-void AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
+bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 void AudioMoth_disableMicrophone(void);
 
 /* USB */
@@ -99,14 +103,18 @@ void AudioMoth_handleUSB(void);
 
 /* Backup domain */
 
-uint32_t AudioMoth_retreiveFromBackupDomain(uint32_t register);
-void AudioMoth_storeInBackupDomain(uint32_t register, uint32_t value);
+uint32_t AudioMoth_retreiveFromBackupDomain(uint32_t number);
+void AudioMoth_storeInBackupDomain(uint32_t number, uint32_t value);
+
+/* Flash user data page */
+
+bool AudioMoth_writeToFlashUserDataPage(uint8_t *data, uint32_t length);
 
 /* Time */
 
 bool AudioMoth_hasTimeBeenSet(void);
-void AudioMoth_setTime(uint32_t time, uint16_t milliseconds);
-void AudioMoth_getTime(uint32_t *time, uint16_t *milliseconds);
+void AudioMoth_setTime(uint32_t time, uint32_t milliseconds);
+void AudioMoth_getTime(uint32_t *time, uint32_t *milliseconds);
 
 /* Watch dog timer */
 
@@ -153,12 +161,13 @@ AM_switchPosition_t AudioMoth_getSwitchPosition(void);
 
 /* Busy delay */
 
-void AudioMoth_delay(uint16_t milliseconds);
+void AudioMoth_delay(uint32_t milliseconds);
 
 /* Sleep and power down */
 
 void AudioMoth_sleep();
 void AudioMoth_powerDown();
+void AudioMoth_powerDownAndWakeMilliseconds(uint32_t millisecond);
 void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised);
 
 /* LED control */
@@ -190,3 +199,5 @@ bool AudioMoth_closeFile(void);
 /* Debugging */
 
 void AudioMoth_setupSWOForPrint(void);
+
+#endif /* __AUDIOMOTH_H */

@@ -20,7 +20,8 @@ void AudioMoth_timezoneRequested(int8_t *timezoneHours, int8_t *timezoneMinutes)
 
 /* Required interrupt handles */
 
-void AudioMoth_handleSwitchInterrupt(void) { }
+void AudioMoth_handleSwitchInterrupt() { }
+void AudioMoth_handleMicrophoneChangeInterrupt() { }
 void AudioMoth_handleMicrophoneInterrupt(int16_t sample) { }
 void AudioMoth_handleDirectMemoryAccessInterrupt(bool primaryChannel, int16_t **nextBuffer) { }
 
@@ -43,7 +44,7 @@ void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t *recei
 
 /* Main function */
 
-int main(void) {
+int main() {
 
     /* Initialise device */
 
