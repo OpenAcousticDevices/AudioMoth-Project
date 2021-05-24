@@ -68,6 +68,11 @@
 #define USB_DATA_GPIOPORT                       gpioPortF
 #define USB_P                                   11
 
+/* LFXO sense */
+
+#define LFXO_DETECT_GPIOPORT                    gpioPortB
+#define LFXO_DETECT                             7
+
 /* EBI */
 
 #define EBI_GPIOPORT_A                          gpioPortA

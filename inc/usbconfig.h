@@ -37,7 +37,7 @@
 
 /* Select the clock used when USB is in low power mode */
 
-#define USB_USBC_32kHz_CLK USB_USBC_32kHz_CLK_LFXO
+#define USB_USBC_32kHz_CLK USB_USBC_32kHz_CLK_LFRCO
 
 /* Select the power saving mode. Enter power save on Suspend and when losing power on VBUS. The application determines when it is save to enter EM2 */
 

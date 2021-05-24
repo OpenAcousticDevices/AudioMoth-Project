@@ -34,9 +34,11 @@
 
 /* Switch, frequency and battery state enumerations */
 
+typedef enum {AM_HF_CLK_DIV1, AM_HF_CLK_DIV2, AM_HF_CLK_DIV4} AM_highFrequencyClockDivider_t;
+
 typedef enum {AM_SWITCH_CUSTOM, AM_SWITCH_DEFAULT, AM_SWITCH_USB, AM_SWITCH_NONE} AM_switchPosition_t;
 
-typedef enum {AM_HFRCO_1MHZ, AM_HFRCO_7MHZ, AM_HFRCO_11MHZ, AM_HFRCO_14MHZ, AM_HFRCO_21MHZ, AM_HFRCO_28MHZ, AM_HFXO} AM_clockFrequency_t;
+typedef enum {AM_HFRCO_1MHZ, AM_HFRCO_7MHZ, AM_HFRCO_11MHZ, AM_HFRCO_14MHZ, AM_HFRCO_21MHZ, AM_HFRCO_28MHZ} AM_clockFrequency_t;
 
 typedef enum {AM_BATTERY_LOW, AM_BATTERY_3V6, AM_BATTERY_3V7, AM_BATTERY_3V8, AM_BATTERY_3V9, AM_BATTERY_4V0, AM_BATTERY_4V1, AM_BATTERY_4V2, \
               AM_BATTERY_4V3, AM_BATTERY_4V4, AM_BATTERY_4V5, AM_BATTERY_4V6, AM_BATTERY_4V7, AM_BATTERY_4V8, AM_BATTERY_4V9, AM_BATTERY_FULL } AM_batteryState_t;
@@ -82,6 +84,8 @@ void AudioMoth_disableHFRCO(void);
 
 uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency);
 
+void AudioMoth_setClockDivider(AM_highFrequencyClockDivider_t divider);
+
 /* External SRAM control */
 
 void AudioMoth_enableExternalSRAM(void);
@@ -122,7 +126,7 @@ void AudioMoth_startWatchdog(void);
 void AudioMoth_stopWatchdog(void);
 
 void AudioMoth_feedWatchdog(void);
-bool AudioMoth_hasWatchdogResetOccured(void);
+bool AudioMoth_hasWatchdogResetOccurred(void);
 
 /* Supply voltage monitoring */
 
@@ -189,8 +193,8 @@ bool AudioMoth_appendFile(char *filename);
 bool AudioMoth_seekInFile(uint32_t position);
 bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite);
 
-bool AudioMoth_makeSDfolder(char *folderName);
-bool AudioMoth_folderExists(char *folderName);
+bool AudioMoth_makeDirectory(char *folderName);
+bool AudioMoth_doesDirectoryExist(char *folderName);
 
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename);
 

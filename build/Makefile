@@ -6,9 +6,15 @@
 
 # Set the toolpath parameter to the location of the GNU Arm Embedded Toolchain
 
-TOOLPATH = 
+TOOLCHAIN_PATH = --- INSERT PATH TO GNU ARM EMBEDDED TOOLCHAIN HERE (e.g. /Library/Toolchains/) ---
 
-# These the locations of the source and header files
+TOOLCHAIN_VERSION = gcc-arm-none-eabi-10-2020-q4-major
+
+# Determine the path to the toolchain binary
+
+TOOLPATH = $(TOOLCHAIN_PATH)/$(TOOLCHAIN_VERSION)/bin/
+
+# These are the locations of the source and header files
 
 INC = ../cmsis ../device/inc ../emlib/inc ../emusb/inc ../drivers/inc ../fatfs/inc  ../inc
 SRC = ../device/src ../emlib/src ../emusb/src ../drivers/src ../fatfs/src  ../src

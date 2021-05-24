@@ -44,7 +44,7 @@
 
 /* Time constants */
 
-#define AM_LFXO_TICKS_PER_SECOND                  32768
+#define AM_LFRCO_TICKS_PER_SECOND                 32768
 #define AM_BURTC_TICKS_PER_SECOND                 1024
 #define AM_MINIMUM_POWER_DOWN_TIME                64
 
@@ -193,7 +193,7 @@ void AudioMoth_initialise() {
 
     CMU_OscillatorEnable(cmuOsc_HFRCO, false, false);
 
-    /* Enable clock to low energy modules */
+    /* Enable clock to GPIO and low energy modules */
 
     CMU_ClockEnable(cmuClock_GPIO, true);
 
@@ -205,11 +205,35 @@ void AudioMoth_initialise() {
 
     RMU_ResetCauseClear();
 
-    /* If this is a start from power-off initialise low frequency oscillator and set up BURTC */
+    /* If this was not a regular reset from EM4 then start LFXO and setup the backup domain */
 
-    if ((resetCause & RMU_RSTCAUSE_EM4WURST) == 0) {
+    if (!(resetCause & RMU_RSTCAUSE_EM4WURST)) {
 
-        /* Start LFXO and wait until it is stable */
+        /* Disable the LFXO */
+
+        CMU_OscillatorEnable(cmuOsc_LFXO, false, false);
+
+        GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 0);
+
+        AudioMoth_delay(100);  
+
+        /* Enable LFXO sense */
+
+        GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 1);
+
+        AudioMoth_delay(10);  
+
+        /* Test for presence of crystal */   
+
+        bool crystal = GPIO_PinInGet(LFXO_DETECT_GPIOPORT, LFXO_DETECT);
+
+        /* Disable LFXO sense */
+
+        GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModeDisabled, 0);
+
+        /* Start the LFXO */
+
+        if (!crystal) CMU->CTRL |= CMU_CTRL_LFXOMODE_DIGEXTCLK;
 
         CMU_OscillatorEnable(cmuOsc_LFXO, true, true);
 
@@ -237,7 +261,11 @@ void AudioMoth_initialise() {
 
         BURTC_RetRegSet(AM_BURTC_INITIAL_POWER_UP_FLAG,  AM_BURTC_CANARY_VALUE);
 
-    } else {
+    }
+
+    /* If this was a regular reset from EM4 check for BURTC overflow and clear flag */
+
+    if (resetCause & RMU_RSTCAUSE_EM4WURST) {
 
         /* Handle overflow of the BURTC counter if overflow flag has been set */
 
@@ -255,7 +283,7 @@ void AudioMoth_initialise() {
 
     }
 
-    /* Record whether a watch dog timer reset has occurred */
+    /* If this was a watch dog timer reset then record that this occurred */
 
     if (resetCause & RMU_RSTCAUSE_WDOGRST) {
 
@@ -285,7 +313,7 @@ void AudioMoth_initialise() {
 
     NVIC_EnableIRQ(GPIO_EVEN_IRQn);
 
-    /* Start the watch dog time */
+    /* Start the watch dog timer */
 
     setupWatchdogTimer();
 
@@ -323,15 +351,7 @@ void AudioMoth_enableHFRCO(AM_clockFrequency_t frequency) {
 
     CMU_OscillatorEnable(cmuOsc_HFRCO, true, true);
 
-    if (frequency < AM_HFXO) {
-
-        CMU_HFRCOBandSet(frequency);
-
-    } else {
-
-        CMU_HFRCOBandSet(cmuHFRCOBand_14MHz);
-
-    }
+    CMU_HFRCOBandSet(frequency);
 
 }
 
@@ -349,24 +369,15 @@ void AudioMoth_disableHFRCO(void) {
 
 uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency) {
 
-    switch (frequency) {
-        case AM_HFRCO_1MHZ:
-            return 1200000;
-        case AM_HFRCO_7MHZ:
-            return 6600000;
-        case AM_HFRCO_11MHZ:
-            return 11000000;
-        case AM_HFRCO_14MHZ:
-            return 14000000;
-        case AM_HFRCO_21MHZ:
-            return 21000000;
-        case AM_HFRCO_28MHZ:
-            return 28000000;
-        case AM_HFXO:
-            return 48000000;
-    }
+    return CMU_ClockFreqGet(cmuClock_HF);
 
-    return 48000000;
+}
+
+void AudioMoth_setClockDivider(AM_highFrequencyClockDivider_t divider) {
+
+    CMU_ClkDiv_TypeDef clockDivider = divider == AM_HF_CLK_DIV4 ? cmuClkDiv_4 : divider == AM_HF_CLK_DIV2 ? cmuClkDiv_2 : cmuClkDiv_1;
+
+    CMU_ClockDivSet(cmuClock_HF, clockDivider);
 
 }
 
@@ -1329,17 +1340,19 @@ int dataSentWebUSBCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t
 
 }
 
-/* Functions to enable and disable the RTC to provide a 10 second interrupt */
+/* Functions to enable and disable the RTC to provide a fixed period interrupt */
 
 static void enableRTC() {
 
-    CMU_ClockSelectSet(cmuClock_LFA, cmuSelect_LFXO);
+    CMU_OscillatorEnable(cmuOsc_LFRCO, true, true);
+
+    CMU_ClockSelectSet(cmuClock_LFA, cmuSelect_LFRCO);
 
     CMU_ClockEnable(cmuClock_RTC, true);
 
     RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
 
-    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFXO_TICKS_PER_SECOND);
+    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFRCO_TICKS_PER_SECOND);
 
     RTC_IntEnable(RTC_IEN_COMP0);
 
@@ -1353,9 +1366,11 @@ static void enableRTC() {
 
 static void disableRTC() {
 
+    RTC_Reset();
+
     CMU_ClockEnable(cmuClock_RTC, false);
 
-    RTC_Reset();
+    CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
 
 }
 
@@ -1365,7 +1380,7 @@ void AudioMoth_handleUSB(void) {
 
     /* Configure data input pin */
 
-    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeInput, 0);
+    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeInputPull, 0);
 
     /* Enable RTC for watch dog and BURTC overflow */
 
@@ -1431,7 +1446,7 @@ void AudioMoth_handleUSB(void) {
 
     /* Disable the data input pin */
 
-    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeDisabled, 0);
+    GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeDisabled, 0);   
 
     /* Jump directly to the boot loader */
 
@@ -2004,7 +2019,7 @@ static void setupWatchdogTimer(void) {
 
 }
 
-bool AudioMoth_hasWatchdogResetOccured(void) {
+bool AudioMoth_hasWatchdogResetOccurred(void) {
 
     return BURTC_RetRegGet(AM_BURTC_WATCH_DOG_FLAG) == AM_BURTC_CANARY_VALUE;
 
@@ -2226,7 +2241,7 @@ bool AudioMoth_renameFile(char *originalFilename, char *newFilename) {
 
 }
 
-bool AudioMoth_makeSDfolder(char *folderName) {
+bool AudioMoth_makeDirectory(char *folderName) {
 
     FRESULT res = f_mkdir(folderName);
 
@@ -2238,7 +2253,7 @@ bool AudioMoth_makeSDfolder(char *folderName) {
 
 }
 
-bool AudioMoth_folderExists(char *folderName){
+bool AudioMoth_doesDirectoryExist(char *folderName){
 
     FRESULT res = f_stat(folderName, NULL);
 
