@@ -69,7 +69,6 @@ extern void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t
 /* Initialise device */
 
 void AudioMoth_initialise(void);
-void AudioMoth_setUpDebugOutput(void);
 bool AudioMoth_isInitialPowerUp(void);
 
 /* Clock control */
