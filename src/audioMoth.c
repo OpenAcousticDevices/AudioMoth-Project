@@ -209,6 +209,10 @@ void AudioMoth_initialise() {
 
     if (!(resetCause & RMU_RSTCAUSE_EM4WURST)) {
 
+        /* Disable the LFRCO */
+
+        CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
+
         /* Disable the LFXO */
 
         CMU_OscillatorEnable(cmuOsc_LFXO, false, false);
@@ -269,13 +273,7 @@ void AudioMoth_initialise() {
 
         /* Handle overflow of the BURTC counter if overflow flag has been set */
 
-        if (BURTC_IntGet() & BURTC_IF_OF) {
-
-            handleTimeOverflow();
-
-            BURTC_IntClear(BURTC_IF_OF);
-
-        }
+        AudioMoth_checkAndHandleTimeOverflow();
 
         /* Clear the initial power up flag */
 
@@ -367,7 +365,7 @@ void AudioMoth_disableHFRCO(void) {
 
 }
 
-uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency) {
+uint32_t AudioMoth_getClockFrequency() {
 
     return CMU_ClockFreqGet(cmuClock_HF);
 
@@ -381,17 +379,31 @@ void AudioMoth_setClockDivider(AM_highFrequencyClockDivider_t divider) {
 
 }
 
+AM_highFrequencyClockDivider_t AudioMoth_getClockDivider() {
+
+    CMU_ClkDiv_TypeDef clockDivider = CMU_ClockDivGet(cmuClock_HF);
+
+    AM_highFrequencyClockDivider_t divider = clockDivider == cmuClkDiv_4 ? AM_HF_CLK_DIV4 : clockDivider == cmuClkDiv_2 ? AM_HF_CLK_DIV2 : AM_HF_CLK_DIV1;
+
+    return divider;
+
+}
+
 /* Interrupt handler for RTC, switch change events, microphone samples, timer overflow and DMA transfers */
 
 void RTC_IRQHandler(void) {
 
+    /* Get the interrupt mask */
+
+    uint32_t interruptMask = RTC_IntGet();
+
+    /* Handle the interrupt */
+
+    if (interruptMask & RTC_IFC_COMP0) WDOG_Feed();
+
     /* Clear interrupt source */
 
-    RTC_IntClear(RTC_IFC_COMP0);
-
-    /* Feed the watch dog */
-
-    WDOG_Feed();
+    RTC_IntClear(interruptMask);
 
 }
 
@@ -401,45 +413,59 @@ void GPIO_EVEN_IRQHandler(void) {
 
     uint32_t interruptMask = GPIO_IntGet();
 
-    /* Clear the GPIO interrupt flag */
-
-    GPIO_IntClear(GPIO_IntGet());
-
     /* Call the interrupt handler */
 
     if (interruptMask & ((1 << SWITCH_1_SENSE) | (1 << SWITCH_2_SENSE))) AudioMoth_handleSwitchInterrupt();
 
     if (interruptMask & (1 << JCK_DETECT)) AudioMoth_handleMicrophoneChangeInterrupt();
 
+    /* Clear the GPIO interrupt flag */
+
+    GPIO_IntClear(interruptMask);
+
 }
 
 void ADC0_IRQHandler(void) {
 
-    /* Clear the ADC0 interrupt flag */
+    /* Get the interrupt mask */
 
-    ADC_IntClear(ADC0, ADC_IF_SINGLE);
+    uint32_t interruptMask = ADC_IntGet(ADC0);
 
-    /* Send the sample to the interrupt handler */
+    /* Handle the interrupt */
 
-    int16_t sample = ADC_DataSingleGet(ADC0);
+    if (interruptMask & ADC_IF_SINGLE) {
 
-    AudioMoth_handleMicrophoneInterrupt(sample);
+        /* Send the sample to the interrupt handler */
 
-    /* Feed the watch dog timer */
+        int16_t sample = ADC_DataSingleGet(ADC0);
 
-    WDOG_Feed();
+        AudioMoth_handleMicrophoneInterrupt(sample);
+
+        /* Feed the watch dog timer */
+
+        WDOG_Feed();
+
+    }
+
+    /* Clear the interrupt */
+
+    ADC_IntClear(ADC0, interruptMask);
 
 }
 
 void TIMER1_IRQHandler(void) {
 
-    /* Clear the TIMER1 overflow flag */
+    /* Get the interrupt mask */
 
-    TIMER_IntClear(TIMER1, TIMER_IF_OF);
+    uint32_t interruptMask = TIMER_IntGet(TIMER1);
 
-    /* Reset the flag */
+    /* Handle the interrupt */
 
-    delayTimmerRunning = false;
+    if (interruptMask & TIMER_IF_OF) delayTimmerRunning = false;
+
+    /* Clear the interrupt */
+
+    TIMER_IntClear(TIMER1, interruptMask);
 
 }
 
@@ -496,7 +522,7 @@ static void setupBackupDomain(void) {
 
 /* Configure BURTC */
 
-static void setupBackupRTC(void) {
+static void setupBackupRTC() {
 
     /* Set up BURTC to count and wake from EM4 */
 
@@ -730,6 +756,14 @@ static void enablePrsTimer(uint32_t sampleRate) {
 
     PRS_SourceSignalSet(0, PRS_CH_CTRL_SOURCESEL_TIMER2, PRS_CH_CTRL_SIGSEL_TIMER2OF, prsEdgeOff);
 
+    /* Enable TIMER with default settings */
+
+    TIMER_Init_TypeDef timerInit = TIMER_INIT_DEFAULT;
+
+    timerInit.enable = false;
+
+    TIMER_Init(TIMER2, &timerInit);
+
     /* Configure TIMER to trigger on sampling rate */
 
     TIMER_TopSet(TIMER2,  CMU_ClockFreqGet(cmuClock_TIMER2) / sampleRate - 1);
@@ -946,6 +980,12 @@ void AudioMoth_sleep(void) {
 
 }
 
+void AudioMoth_deepSleep(void) {
+
+    EMU_EnterEM2(true);
+
+}
+
 /* Function to power down the device */
 
 void AudioMoth_powerDown() {
@@ -1076,8 +1116,14 @@ void stateChange(USBD_State_TypeDef oldState, USBD_State_TypeDef newState) {
 
         USBD_Read(WEBUSB_EP_OUT, receiveBuffer, AM_USB_BUFFERSIZE, dataReceivedWebUSBCallback);
 
-    }
+    } else if (oldState == USBD_STATE_CONFIGURED) {
+    
+        USBD_AbortTransfer(HID_EP_OUT);
 
+        USBD_AbortTransfer(WEBUSB_EP_OUT);
+
+    }
+    
 }
 
 /* Callback which provides the WEB USB and USB HID specific descriptors */
@@ -1340,40 +1386,6 @@ int dataSentWebUSBCallback(USB_Status_TypeDef status, uint32_t xferred, uint32_t
 
 }
 
-/* Functions to enable and disable the RTC to provide a fixed period interrupt */
-
-static void enableRTC() {
-
-    CMU_OscillatorEnable(cmuOsc_LFRCO, true, true);
-
-    CMU_ClockSelectSet(cmuClock_LFA, cmuSelect_LFRCO);
-
-    CMU_ClockEnable(cmuClock_RTC, true);
-
-    RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
-
-    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFRCO_TICKS_PER_SECOND);
-
-    RTC_IntEnable(RTC_IEN_COMP0);
-
-    NVIC_ClearPendingIRQ(RTC_IRQn);
-
-    NVIC_EnableIRQ(RTC_IRQn);
-
-    RTC_Init(&rtcInit);
-
-}
-
-static void disableRTC() {
-
-    RTC_Reset();
-
-    CMU_ClockEnable(cmuClock_RTC, false);
-
-    CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
-
-}
-
 /* Function to handle USB from the application */
 
 void AudioMoth_handleUSB(void) {
@@ -1384,7 +1396,7 @@ void AudioMoth_handleUSB(void) {
 
     /* Enable RTC for watch dog and BURTC overflow */
 
-    enableRTC();
+    AudioMoth_startRealTimeClock(AM_USB_EM2_RTC_WAKEUP_INTERVAL);
 
     /* Enable the USB interface */
 
@@ -1410,13 +1422,7 @@ void AudioMoth_handleUSB(void) {
 
         /* Handle BURTC overflow */
 
-        if (BURTC_IntGet() & BURTC_IF_OF) {
-
-            handleTimeOverflow();
-
-            BURTC_IntClear(BURTC_IF_OF);
-
-        }
+        AudioMoth_checkAndHandleTimeOverflow();
 
         /* Enter low power standby if USB is unplugged */
 
@@ -1442,7 +1448,7 @@ void AudioMoth_handleUSB(void) {
 
     /* Disable RTC */
 
-    disableRTC();
+    AudioMoth_stopRealTimeClock();
 
     /* Disable the data input pin */
 
@@ -1836,7 +1842,6 @@ int32_t AudioMoth_getTemperature() {
 
 }
 
-
 /* Function to query the switch position */
 
 AM_switchPosition_t AudioMoth_getSwitchPosition(void) {
@@ -2040,6 +2045,54 @@ void AudioMoth_startWatchdog(void) {
 void AudioMoth_stopWatchdog(void) {
 
     WDOG_Enable(false);
+
+}
+
+/* Real time clock */
+
+void AudioMoth_startRealTimeClock(uint32_t seconds) {
+
+    CMU_OscillatorEnable(cmuOsc_LFRCO, true, true);
+
+    CMU_ClockSelectSet(cmuClock_LFA, cmuSelect_LFRCO);
+
+    CMU_ClockEnable(cmuClock_RTC, true);
+
+    RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
+
+    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFRCO_TICKS_PER_SECOND);
+
+    RTC_IntEnable(RTC_IEN_COMP0);
+
+    NVIC_ClearPendingIRQ(RTC_IRQn);
+
+    NVIC_EnableIRQ(RTC_IRQn);
+
+    RTC_Init(&rtcInit);
+
+}
+
+void AudioMoth_stopRealTimeClock(void) {
+
+    RTC_Reset();
+
+    CMU_ClockEnable(cmuClock_RTC, false);
+
+    CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
+
+}
+
+/* Function to check and handle timer overflow */
+
+void AudioMoth_checkAndHandleTimeOverflow(void) {
+
+    if (BURTC_IntGet() & BURTC_IF_OF) {
+
+        handleTimeOverflow();
+
+        BURTC_IntClear(BURTC_IF_OF);
+
+    }
 
 }
 

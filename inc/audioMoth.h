@@ -82,9 +82,10 @@ void AudioMoth_enableHFRCO(AM_clockFrequency_t frequency);
 void AudioMoth_selectHFRCO(void);
 void AudioMoth_disableHFRCO(void);
 
-uint32_t AudioMoth_getClockFrequency(AM_clockFrequency_t frequency);
+uint32_t AudioMoth_getClockFrequency();
 
 void AudioMoth_setClockDivider(AM_highFrequencyClockDivider_t divider);
+AM_highFrequencyClockDivider_t AudioMoth_getClockDivider(void);
 
 /* External SRAM control */
 
@@ -128,6 +129,13 @@ void AudioMoth_stopWatchdog(void);
 void AudioMoth_feedWatchdog(void);
 bool AudioMoth_hasWatchdogResetOccurred(void);
 
+/* Real time clock */
+
+void AudioMoth_startRealTimeClock(uint32_t seconds);
+void AudioMoth_stopRealTimeClock(void);
+
+void AudioMoth_checkAndHandleTimeOverflow(void);
+
 /* Supply voltage monitoring */
 
 void AudioMoth_enableSupplyMonitor(void);
@@ -170,6 +178,7 @@ void AudioMoth_delay(uint32_t milliseconds);
 /* Sleep and power down */
 
 void AudioMoth_sleep();
+void AudioMoth_deepSleep();
 void AudioMoth_powerDown();
 void AudioMoth_powerDownAndWakeMilliseconds(uint32_t millisecond);
 void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised);
