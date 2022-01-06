@@ -44,7 +44,7 @@
 
 /* Time constants */
 
-#define AM_LFRCO_TICKS_PER_SECOND                 32768
+#define AM_LFXO_LFRCO_TICKS_PER_SECOND            32768
 #define AM_BURTC_TICKS_PER_SECOND                 1024
 #define AM_MINIMUM_POWER_DOWN_TIME                64
 
@@ -131,7 +131,7 @@
 
 /* Hardware type enumeration */
 
-typedef enum {AM_VERSION_1, AM_VERSION_2, AM_VERSION_3} AM_hardwareVersion_t;
+typedef enum {AM_VERSION_1, AM_VERSION_2, AM_VERSION_3, AM_VERSION_4} AM_hardwareVersion_t;
 
 /* USB buffers */
 
@@ -162,12 +162,12 @@ static volatile bool enterBootloader;
 static void setupGPIO(void);
 static void enableEBI(void);
 static void disableEBI(void);
-static void setupBackupRTC(void);
-static void setupBackupDomain(void);
+static void setupBackupRTC(bool useLFXO);
+static void setupBackupDomain(bool useLFXO);
 static void setupWatchdogTimer(void);
 static void handleTimeOverflow(void);
-static void setupOpAmp(uint32_t gain);
-static void senseHardwareVersion(void);
+static void setupOpAmp(AM_gainRange_t gainRain, AM_gainSetting_t gain);
+static AM_hardwareVersion_t senseHardwareVersion(void);
 static void enablePrsTimer(uint32_t samplerate);
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 
@@ -209,49 +209,73 @@ void AudioMoth_initialise() {
 
     if (!(resetCause & RMU_RSTCAUSE_EM4WURST)) {
 
-        /* Disable the LFRCO */
+        /* Sense the hardware version */
 
-        CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
+        AM_hardwareVersion_t hardwareVersion = senseHardwareVersion();
 
-        /* Disable the LFXO */
+        /* Start the appropriate low frequency oscillator */ 
 
-        CMU_OscillatorEnable(cmuOsc_LFXO, false, false);
+        if (hardwareVersion < AM_VERSION_4) {
 
-        GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 0);
+            /* Disable the LFRCO */
 
-        AudioMoth_delay(100);  
+            CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
 
-        /* Enable LFXO sense */
+            /* Disable the LFXO */
 
-        GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 1);
+            CMU_OscillatorEnable(cmuOsc_LFXO, false, false);
 
-        AudioMoth_delay(10);  
+            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 0);
 
-        /* Test for presence of crystal */   
+            AudioMoth_delay(100);  
 
-        bool crystal = GPIO_PinInGet(LFXO_DETECT_GPIOPORT, LFXO_DETECT);
+            /* Enable LFXO sense */
 
-        /* Disable LFXO sense */
+            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModePushPull, 1);
 
-        GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModeDisabled, 0);
+            AudioMoth_delay(10);  
 
-        /* Start the LFXO */
+            /* Test for presence of crystal */   
 
-        if (!crystal) CMU->CTRL |= CMU_CTRL_LFXOMODE_DIGEXTCLK;
+            bool crystal = GPIO_PinInGet(LFXO_DETECT_GPIOPORT, LFXO_DETECT);
 
-        CMU_OscillatorEnable(cmuOsc_LFXO, true, true);
+            /* Disable LFXO sense */
+
+            GPIO_PinModeSet(LFXO_DETECT_GPIOPORT, LFXO_DETECT, gpioModeDisabled, 0);
+
+            /* Start the LFXO */
+
+            if (!crystal) CMU->CTRL |= CMU_CTRL_LFXOMODE_DIGEXTCLK;
+
+            CMU_OscillatorEnable(cmuOsc_LFXO, true, true);
+
+        } else {
+
+            /* Disable the LFXO */
+
+            CMU_OscillatorEnable(cmuOsc_LFXO, false, false);
+
+            /* Start the LFRCO */
+
+            CMU_OscillatorEnable(cmuOsc_LFRCO, true, true);
+
+            /* Delay to match LFXO startup time */
+
+            AudioMoth_delay(1000);
+
+        }
 
         /* Setup backup domain for EM4 */
 
-        setupBackupDomain();
+        setupBackupDomain(hardwareVersion < AM_VERSION_4);
 
         /* Setup backup RTC */
 
-        setupBackupRTC();
+        setupBackupRTC(hardwareVersion < AM_VERSION_4);
 
-        /* Sense the hardware version */
+        /* Set the hardware version */
 
-        senseHardwareVersion();
+        BURTC_RetRegSet(AM_BURTC_HARDWARE_VERSION, hardwareVersion);
 
         /* Clear the time set flag and the counter */
 
@@ -322,6 +346,16 @@ void AudioMoth_initialise() {
 bool AudioMoth_isInitialPowerUp(void) {
 
     return BURTC_RetRegGet(AM_BURTC_INITIAL_POWER_UP_FLAG) == AM_BURTC_CANARY_VALUE;
+
+}
+
+/* Device status */
+
+bool AudioMoth_hasInvertedOutput(void) {
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    return hardwareVersion >= AM_VERSION_4;
 
 }
 
@@ -417,7 +451,7 @@ void GPIO_EVEN_IRQHandler(void) {
 
     if (interruptMask & ((1 << SWITCH_1_SENSE) | (1 << SWITCH_2_SENSE))) AudioMoth_handleSwitchInterrupt();
 
-    if (interruptMask & (1 << JCK_DETECT)) AudioMoth_handleMicrophoneChangeInterrupt();
+    if (interruptMask & ((1 << JCK_DETECT) | (1 << JCK_DETECT_ALT))) AudioMoth_handleMicrophoneChangeInterrupt();
 
     /* Clear the GPIO interrupt flag */
 
@@ -493,7 +527,7 @@ static void transferComplete(unsigned int channel, bool isPrimaryBuffer, void *u
 
 /* Set up backup domain */
 
-static void setupBackupDomain(void) {
+static void setupBackupDomain(bool useLFXO) {
 
     /* Initialise GPIO, BURTC and EM4 registers */
 
@@ -502,7 +536,7 @@ static void setupBackupDomain(void) {
     em4Init.vreg = true;
     em4Init.lockConfig = true;
     em4Init.buRtcWakeup = true;
-    em4Init.osc = emuEM4Osc_LFXO;
+    em4Init.osc = useLFXO ? emuEM4Osc_LFXO : emuEM4Osc_LFRCO;
 
     /* Unlock configuration */
 
@@ -522,14 +556,14 @@ static void setupBackupDomain(void) {
 
 /* Configure BURTC */
 
-static void setupBackupRTC() {
+static void setupBackupRTC(bool useLFXO) {
 
     /* Set up BURTC to count and wake from EM4 */
 
     BURTC_Init_TypeDef burtcInit = BURTC_INIT_DEFAULT;
 
     burtcInit.mode = burtcModeEM4;
-    burtcInit.clkSel = burtcClkSelLFXO;
+    burtcInit.clkSel = useLFXO ? burtcClkSelLFXO : burtcClkSelLFRCO;
     burtcInit.clkDiv = burtcClkDiv_32;
     burtcInit.timeStamp = false;
     burtcInit.compare0Top = false;
@@ -636,7 +670,7 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
 }
 
-bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
+bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
 
     /* Check for external microphone */
 
@@ -644,7 +678,7 @@ bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t a
 
     AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
-    if (hardwareVersion > AM_VERSION_1) {
+    if (hardwareVersion >= AM_VERSION_2 && hardwareVersion < AM_VERSION_4) {
 
         GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, 0);
 
@@ -654,25 +688,39 @@ bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t a
 
     }
 
+    if (hardwareVersion >= AM_VERSION_4) {
+
+        GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeInput, 0);
+
+        GPIO_IntConfig(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, true, true, true);
+
+        externalMicrophone = GPIO_PinInGet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT) == 0;
+
+    }
+
     /* Enable microphone power */
 
     if (externalMicrophone) {
 
-        GPIO_PinOutClear(JCK_GPIOPORT, JCK_ENABLE_N);
+        if (hardwareVersion < AM_VERSION_4) {
+            GPIO_PinOutClear(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N);
+        } else {
+            GPIO_PinOutClear(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N);
+        }
 
     } else {
 
-        GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
+        if (hardwareVersion < AM_VERSION_4) GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
 
     }
 
     /* Enable VREF power */
 
-    GPIO_PinOutSet(VREF_GPIOPORT, VREF_ENABLE);
+    if (hardwareVersion < AM_VERSION_4) GPIO_PinOutSet(VREF_GPIOPORT, VREF_ENABLE);
 
     /* Set up amplifier stage and the ADC */
 
-    setupOpAmp(gain);
+    setupOpAmp(gainRain, gain);
 
     setupADC(clockDivider, acquisitionCycles, oversampleRate);
 
@@ -681,6 +729,10 @@ bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t a
 }
 
 void AudioMoth_disableMicrophone(void) {
+
+    /* Check the hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
     /* Stop the ADC interrupts */
 
@@ -698,21 +750,33 @@ void AudioMoth_disableMicrophone(void) {
 
     /* Disable internal microphone */
 
-    GPIO_PinOutSet(VMIC_GPIOPORT, VMIC_ENABLE_N);
+    if (hardwareVersion < AM_VERSION_4) GPIO_PinOutSet(VMIC_GPIOPORT, VMIC_ENABLE_N);
 
     /* Disable external microphone */
 
-    GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, false);
+    if (hardwareVersion >= AM_VERSION_2 && hardwareVersion < AM_VERSION_4) {
 
-    GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
+        GPIO_IntConfig(JCK_DETECT_GPIOPORT, JCK_DETECT, true, true, false);
 
-    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+        GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
 
-    if (hardwareVersion > AM_VERSION_1) GPIO_PinOutSet(JCK_GPIOPORT, JCK_ENABLE_N);
+        GPIO_PinOutSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N);
+
+    }
+
+    if (hardwareVersion >= AM_VERSION_4) {
+
+        GPIO_IntConfig(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, true, true, false);
+
+        GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, 0);
+
+        GPIO_PinOutSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N);
+
+    }
 
     /* Disable VREF power */
 
-    GPIO_PinOutClear(VREF_GPIOPORT, VREF_ENABLE);
+    if (hardwareVersion < AM_VERSION_4) GPIO_PinOutClear(VREF_GPIOPORT, VREF_ENABLE);
 
     /* Stop the clocks */
 
@@ -722,7 +786,13 @@ void AudioMoth_disableMicrophone(void) {
 
 }
 
-void AudioMoth_enableExternalSRAM(void) {
+bool AudioMoth_enableExternalSRAM(void) {
+
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return false;
 
     /* Turn SRAM card on */
 
@@ -732,9 +802,19 @@ void AudioMoth_enableExternalSRAM(void) {
 
     enableEBI();
 
+    /* Return success */
+
+    return true;
+
 }
 
 void AudioMoth_disableExternalSRAM(void) {
+
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return;
 
     /* Turn SRAM card off */
 
@@ -774,7 +854,11 @@ static void enablePrsTimer(uint32_t sampleRate) {
 
 }
 
-static void setupOpAmp(uint32_t gain) {
+static void setupOpAmp(AM_gainRange_t gainRain, AM_gainSetting_t gain) {
+
+    /* Check the hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
     /* Start the clock */
 
@@ -786,35 +870,34 @@ static void setupOpAmp(uint32_t gain) {
 
     OPAMP_Init_TypeDef opa2Init = OPA_INIT_INVERTING_OPA2;
 
-    opa2Init.outPen = DAC_OPA2MUX_OUTPEN_OUT1;
+    if (hardwareVersion < AM_VERSION_4) {
 
-    if (gain == 4) {
-
-        opa1Init.resSel = opaResSelR2eq15R1;
-        opa2Init.resSel = opaResSelR2eq2R1;
-
-    } else if (gain == 3) {
-
-        opa1Init.resSel = opaResSelR2eq15R1;
-        opa2Init.resSel = opaResSelR1eq1_67R1;
-
-    } else if (gain == 2) {
-
-        opa1Init.resSel = opaResSelR2eq15R1;
-        opa2Init.resSel = opaResSelR2eqR1;
-
-    } else if (gain == 1) {
-
-        opa1Init.resSel = opaResSelR2eq7R1;
-        opa2Init.resSel = opaResSelR2eqR1;
+        opa2Init.outPen = DAC_OPA2MUX_OUTPEN_OUT1;
 
     } else {
 
-        opa1Init.resSel = opaResSelR2eq4_33R1;
-        opa2Init.resSel = opaResSelR2eqR1;
+        opa1Init.outMode = opaOutModeAlt;
+        opa1Init.outPen = DAC_OPA1MUX_OUTPEN_OUT4;
+
+        opa2Init.outPen = DAC_OPA2MUX_OUTPEN_OUT0;
 
     }
 
+    /* Set the gain */
+
+    static OPAMP_ResSel_TypeDef opamp1NormalGainRange[] = {opaResSelR2eq4_33R1, opaResSelR2eq7R1, opaResSelR2eq15R1, opaResSelR2eq15R1, opaResSelR2eq15R1};
+    static OPAMP_ResSel_TypeDef opamp2NormalGainRange[] = {opaResSelR2eqR1, opaResSelR2eqR1, opaResSelR2eqR1, opaResSelR1eq1_67R1, opaResSelR2eq2R1};
+
+    static OPAMP_ResSel_TypeDef opamp1LowGainRange[] = {opaResSelR2eq0_33R1, opaResSelR2eq0_33R1, opaResSelR2eqR1, opaResSelR2eqR1, opaResSelR2eqR1};
+    static OPAMP_ResSel_TypeDef opamp2LowGainRange[] = {opaResSelR2eqR1, opaResSelR1eq1_67R1, opaResSelR2eqR1, opaResSelR1eq1_67R1, opaResSelR2eq2R1};
+
+    OPAMP_ResSel_TypeDef *opamp1Gain = gainRain == AM_LOW_GAIN_RANGE ? opamp1LowGainRange : opamp1NormalGainRange;
+    OPAMP_ResSel_TypeDef *opamp2Gain = gainRain == AM_LOW_GAIN_RANGE ? opamp2LowGainRange : opamp2NormalGainRange;
+
+    uint32_t index = MAX(AM_GAIN_LOW, MIN(gain, AM_GAIN_HIGH));
+
+    opa1Init.resSel = opamp1Gain[index];
+    opa2Init.resSel = opamp2Gain[index];
 
     /* Enable OPA1 and OPA2 */
 
@@ -829,6 +912,10 @@ static void setupOpAmp(uint32_t gain) {
 }
 
 static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate) {
+
+    /* Check the hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
     /* Start the clock */
 
@@ -889,7 +976,16 @@ static void setupADC(uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t
 
     }
 
-    adcSingleInit.input = adcSingleInpCh0Ch1;
+    if (hardwareVersion < AM_VERSION_4) {
+
+        adcSingleInit.input = adcSingleInpCh0Ch1;
+
+    } else {
+
+        adcSingleInit.input = adcSingleInpCh4Ch5;
+
+    }
+
     adcSingleInit.prsEnable = true;
     adcSingleInit.diff = true;
     adcSingleInit.rep = false;
@@ -1506,7 +1602,7 @@ void AudioMoth_handleUSB(void) {
 
 /* Function to handle hardware version sensing */
 
-static void senseHardwareVersion() {
+static AM_hardwareVersion_t senseHardwareVersion() {
 
    /* Enable ADC clock */
 
@@ -1544,9 +1640,11 @@ static void senseHardwareVersion() {
 
    CMU_ClockEnable(cmuClock_ADC0, false);
 
-   /* Set the hardware version */
+   /* Return the hardware version */
 
-   BURTC_RetRegSet(AM_BURTC_HARDWARE_VERSION, value < 256 ? AM_VERSION_1 : value < 512 ? AM_VERSION_2 : AM_VERSION_3);
+   AM_hardwareVersion_t hardwareVersion = value < 256 ? AM_VERSION_1 : value < 512 ? AM_VERSION_2 : value < 768 ? AM_VERSION_3 : AM_VERSION_4;
+
+   return hardwareVersion;
 
 }
 
@@ -1622,6 +1720,12 @@ bool AudioMoth_isSupplyAboveThreshold() {
 
 void AudioMoth_enableBatteryMonitor() {
 
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return;
+
     /* Enable battery monitor pin */
 
     GPIO_PinOutSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE);
@@ -1669,6 +1773,14 @@ static inline void updateBatteryMonitorThresholdLevel(uint32_t level) {
 
 void AudioMoth_setBatteryMonitorThreshold(uint32_t batteryVoltage, uint32_t supplyVoltage) {
 
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return;
+
+    /* Set battery monitor threshold */
+
     uint32_t level = ROUNDED_DIV(MAXIMIMUM_COMPARATOR_LEVEL * batteryVoltage / BATTERY_MONITOR_DIVIDER, supplyVoltage);
 
     updateBatteryMonitorThresholdLevel(level);
@@ -1677,11 +1789,25 @@ void AudioMoth_setBatteryMonitorThreshold(uint32_t batteryVoltage, uint32_t supp
 
 bool AudioMoth_isBatteryAboveThreshold() {
 
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return false;
+
+    /* Return battery monitor state */
+
     return (ACMP0->STATUS & ACMP_STATUS_ACMPOUT);
 
 }
 
 void AudioMoth_disableBatteryMonitor() {
+
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return;
 
     /* Disable ACMP */
 
@@ -1732,6 +1858,12 @@ uint32_t AudioMoth_getSupplyVoltage() {
 
 AM_extendedBatteryState_t AudioMoth_getExtendedBatteryState(uint32_t supplyVoltage) {
 
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return AM_EXT_BAT_LOW;
+
     /* Enable battery monitor */
 
     AudioMoth_enableBatteryMonitor();
@@ -1765,6 +1897,14 @@ AM_extendedBatteryState_t AudioMoth_getExtendedBatteryState(uint32_t supplyVolta
 }
 
 AM_batteryState_t AudioMoth_getBatteryState(uint32_t supplyVoltage) {
+
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return AM_BATTERY_LOW;
+
+    /* Get the battery state */
 
     AM_extendedBatteryState_t extendedBatteryState = AudioMoth_getExtendedBatteryState(supplyVoltage);
 
@@ -2052,15 +2192,23 @@ void AudioMoth_stopWatchdog(void) {
 
 void AudioMoth_startRealTimeClock(uint32_t seconds) {
 
-    CMU_OscillatorEnable(cmuOsc_LFRCO, true, true);
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    /* Enable LF oscillator and RTC clock */
+
+    if (hardwareVersion < AM_VERSION_4) CMU_OscillatorEnable(cmuOsc_LFRCO, true, true);
 
     CMU_ClockSelectSet(cmuClock_LFA, cmuSelect_LFRCO);
 
     CMU_ClockEnable(cmuClock_RTC, true);
 
+    /* Configure RTC */
+
     RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
 
-    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFRCO_TICKS_PER_SECOND);
+    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFXO_LFRCO_TICKS_PER_SECOND);
 
     RTC_IntEnable(RTC_IEN_COMP0);
 
@@ -2074,11 +2222,19 @@ void AudioMoth_startRealTimeClock(uint32_t seconds) {
 
 void AudioMoth_stopRealTimeClock(void) {
 
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    /* Reset RTC */
+
     RTC_Reset();
+
+    /* Disable LF oscillator and RTC clock */
 
     CMU_ClockEnable(cmuClock_RTC, false);
 
-    CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
+    if (hardwareVersion < AM_VERSION_4) CMU_OscillatorEnable(cmuOsc_LFRCO, false, false);
 
 }
 
@@ -2149,6 +2305,12 @@ void AudioMoth_setGreenLED(bool state) {
 
 bool AudioMoth_enableFileSystem(void) {
 
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return false;
+
     /* Turn SD card on*/
 
     GPIO_PinOutClear(SDEN_GPIOPORT, SD_ENABLE_N);
@@ -2171,11 +2333,19 @@ bool AudioMoth_enableFileSystem(void) {
         return false;
     }
 
+    /* Return success */
+
     return true;
 
 }
 
 void AudioMoth_disableFileSystem(void) {
+
+    /* Check hardware version */
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion >= AM_VERSION_4) return;
 
     /* Disable the SD card pins */
 
@@ -2478,8 +2648,14 @@ static void setupGPIO(void) {
 	GPIO_PinModeSet(gpioPortA, 8, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortA, 9, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortA, 10, gpioModeDisabled, 0);
-	GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModePushPull, 0);
-	GPIO_PinModeSet(gpioPortA, 12, gpioModeDisabled, 0);
+
+    if (hardwareVersion >= AM_VERSION_4) {
+	    GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModeDisabled, 0);
+    } else {
+        GPIO_PinModeSet(VREF_GPIOPORT, VREF_ENABLE, gpioModePushPull, 0);
+    }
+	
+    GPIO_PinModeSet(gpioPortA, 12, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortA, 13, gpioModeDisabled, 0);
 	GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_A, EBI_AD08, gpioModeDisabled, 0);
@@ -2493,6 +2669,12 @@ static void setupGPIO(void) {
 	GPIO_PinModeSet(gpioPortB, 4, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortB, 5, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortB, 6, gpioModeDisabled, 0);
+
+    if (hardwareVersion >= AM_VERSION_4) {
+        GPIO_PinModeSet(gpioPortB, 7, gpioModeDisabled, 0);
+        GPIO_PinModeSet(gpioPortB, 8, gpioModeDisabled, 0);
+    }
+
 	GPIO_PinModeSet(gpioPortB, 9, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortB, 10, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortB, 11, gpioModeDisabled, 0);
@@ -2502,8 +2684,19 @@ static void setupGPIO(void) {
 
 	GPIO_PinModeSet(gpioPortC, 0, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortC, 1, gpioModeDisabled, 0);
-	GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModePushPull, 0);
-	GPIO_PinModeSet(gpioPortC, 7, gpioModeDisabled, 0);
+
+    if (hardwareVersion >= AM_VERSION_4) {
+	    GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModeDisabled, 0);
+    } else {
+        GPIO_PinModeSet(BAT_MON_GPIOPORT, BAT_MON_ENABLE, gpioModePushPull, 0);
+    }
+
+    if (hardwareVersion < AM_VERSION_4) {
+        GPIO_PinModeSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N, gpioModeDisabled, 0);
+    } else {
+        GPIO_PinModeSet(JCK_ENABLE_ALT_GPIOPORT, JCK_ENABLE_ALT_N,  gpioModePushPull, 1);
+    }
+
 	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A15, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A09, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_C, EBI_A10, gpioModeDisabled, 0);
@@ -2511,6 +2704,7 @@ static void setupGPIO(void) {
 
 	/* GPIO D */
 
+    GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 1, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 2, gpioModeDisabled, 0);
 	GPIO_PinModeSet(gpioPortD, 3, gpioModeDisabled, 0);
@@ -2518,18 +2712,33 @@ static void setupGPIO(void) {
 	GPIO_PinModeSet(VERSION_CONTROL_GPIOPORT, VERSION_CONTROL, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL1, gpioModeDisabled, 0);
 	GPIO_PinModeSet(EBI_GPIOPORT_D, EBI_CSEL2, gpioModeDisabled, 0);
-	GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModePushPull, 1);
-	GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModePushPull, 1);
+
+    if (hardwareVersion >= AM_VERSION_4) {
+	    GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModeDisabled, 0);
+    } else {
+        GPIO_PinModeSet(SRAMEN_GPIOPORT, SRAM_ENABLE_N, gpioModePushPull, 1);
+    }
+
+    if (hardwareVersion >= AM_VERSION_4) {
+        GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModeDisabled, 0);
+    } else {
+	    GPIO_PinModeSet(SDEN_GPIOPORT, SD_ENABLE_N, gpioModePushPull, 1);
+    }
 
 	/* GPIO E */
 
-	GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModePushPull, 1);
+     if (hardwareVersion >= AM_VERSION_4) {
+	   GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModeDisabled, 0);
+    } else {
+        GPIO_PinModeSet(VMIC_GPIOPORT, VMIC_ENABLE_N, gpioModePushPull, 1);
+    }
+
 	GPIO_PinModeSet(EBI_GPIOPORT_E, EBI_A08, gpioModeDisabled, 0);
 
-    if (hardwareVersion > AM_VERSION_1) {
-        GPIO_PinModeSet(JCK_GPIOPORT, JCK_ENABLE_N, gpioModePushPull, 1);
+    if (hardwareVersion < AM_VERSION_2 || hardwareVersion >= AM_VERSION_4) {
+        GPIO_PinModeSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N, gpioModeDisabled, 0);
     } else {
-        GPIO_PinModeSet(JCK_GPIOPORT, JCK_ENABLE_N, gpioModeDisabled, 0);
+        GPIO_PinModeSet(JCK_ENABLE_GPIOPORT, JCK_ENABLE_N, gpioModePushPull, 1);
     }
 
 	GPIO_PinModeSet(gpioPortE, 3, gpioModeDisabled, 0);
@@ -2577,54 +2786,54 @@ int _write(int file, const char *ptr, int len) {
 
 void AudioMoth_setupSWOForPrint(void) {
 
-  /* Enable GPIO clock. */
+    /* Enable GPIO clock. */
 
-  CMU->HFPERCLKEN0 |= CMU_HFPERCLKEN0_GPIO;
+    CMU->HFPERCLKEN0 |= CMU_HFPERCLKEN0_GPIO;
 
-  /* Enable Serial wire output pin */
+    /* Enable Serial wire output pin */
 
-  GPIO->ROUTE |= GPIO_ROUTE_SWOPEN;
+    GPIO->ROUTE |= GPIO_ROUTE_SWOPEN;
 
-  /* Set location 0 */
+    /* Set location 0 */
 
-  GPIO->ROUTE = (GPIO->ROUTE & ~(_GPIO_ROUTE_SWLOCATION_MASK)) | GPIO_ROUTE_SWLOCATION_LOC0;
+    GPIO->ROUTE = (GPIO->ROUTE & ~(_GPIO_ROUTE_SWLOCATION_MASK)) | GPIO_ROUTE_SWLOCATION_LOC0;
 
-  /* Enable output on pin - GPIO Port F, Pin 2 */
+    /* Enable output on pin - GPIO Port F, Pin 2 */
 
-  GPIO->P[5].MODEL &= ~(_GPIO_P_MODEL_MODE2_MASK);
+    GPIO->P[5].MODEL &= ~(_GPIO_P_MODEL_MODE2_MASK);
 
-  GPIO->P[5].MODEL |= GPIO_P_MODEL_MODE2_PUSHPULL;
+    GPIO->P[5].MODEL |= GPIO_P_MODEL_MODE2_PUSHPULL;
 
-  /* Enable debug clock AUXHFRCO */
+    /* Enable debug clock AUXHFRCO */
 
-  CMU->OSCENCMD = CMU_OSCENCMD_AUXHFRCOEN;
+    CMU->OSCENCMD = CMU_OSCENCMD_AUXHFRCOEN;
 
-  /* Wait until clock is ready */
+    /* Wait until clock is ready */
 
-  while (!(CMU->STATUS & CMU_STATUS_AUXHFRCORDY));
+    while (!(CMU->STATUS & CMU_STATUS_AUXHFRCORDY));
 
-  /* Enable trace in core debug */
+    /* Enable trace in core debug */
 
-  CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
+    CoreDebug->DEMCR |= CoreDebug_DEMCR_TRCENA_Msk;
 
-  ITM->LAR  = 0xC5ACCE55;
+    ITM->LAR  = 0xC5ACCE55;
 
-  ITM->TER  = 0x0;
+    ITM->TER  = 0x0;
 
-  ITM->TCR  = 0x0;
+    ITM->TCR  = 0x0;
 
-  TPI->SPPR = 2;
+    TPI->SPPR = 2;
 
-  TPI->ACPR = 0xf;
+    TPI->ACPR = 0xf;
 
-  ITM->TPR  = 0x0;
+    ITM->TPR  = 0x0;
 
-  DWT->CTRL = 0x400003FE;
+    DWT->CTRL = 0x400003FE;
 
-  ITM->TCR  = 0x0001000D;
+    ITM->TCR  = 0x0001000D;
 
-  TPI->FFCR = 0x00000100;
+    TPI->FFCR = 0x00000100;
 
-  ITM->TER  = 0x1;
+    ITM->TER  = 0x1;
 
 }

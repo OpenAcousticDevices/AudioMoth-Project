@@ -32,11 +32,15 @@
 #define AM_EXT_BAT_STATE_OFFSET                2400
 #define AM_BATTERY_STATE_INCREMENT             100
 
-/* Switch, frequency and battery state enumerations */
+/* Gain, switch, frequency and battery state enumerations */
+
+typedef enum {AM_LOW_GAIN_RANGE, AM_NORMAL_GAIN_RANGE} AM_gainRange_t;
 
 typedef enum {AM_HF_CLK_DIV1, AM_HF_CLK_DIV2, AM_HF_CLK_DIV4} AM_highFrequencyClockDivider_t;
 
 typedef enum {AM_SWITCH_CUSTOM, AM_SWITCH_DEFAULT, AM_SWITCH_USB, AM_SWITCH_NONE} AM_switchPosition_t;
+
+typedef enum {AM_GAIN_LOW, AM_GAIN_LOW_MEDIUM, AM_GAIN_MEDIUM, AM_GAIN_MEDIUM_HIGH, AM_GAIN_HIGH} AM_gainSetting_t;
 
 typedef enum {AM_HFRCO_1MHZ, AM_HFRCO_7MHZ, AM_HFRCO_11MHZ, AM_HFRCO_14MHZ, AM_HFRCO_21MHZ, AM_HFRCO_28MHZ} AM_clockFrequency_t;
 
@@ -71,6 +75,10 @@ extern void AudioMoth_usbApplicationPacketReceived(uint32_t messageType, uint8_t
 void AudioMoth_initialise(void);
 bool AudioMoth_isInitialPowerUp(void);
 
+/* Device status */
+
+bool AudioMoth_hasInvertedOutput(void);
+
 /* Clock control */
 
 void AudioMoth_enableHFXO(void);
@@ -88,7 +96,7 @@ AM_highFrequencyClockDivider_t AudioMoth_getClockDivider(void);
 
 /* External SRAM control */
 
-void AudioMoth_enableExternalSRAM(void);
+bool AudioMoth_enableExternalSRAM(void);
 void AudioMoth_disableExternalSRAM(void);
 
 /* Microphone samples */
@@ -98,7 +106,7 @@ void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 void AudioMoth_initialiseMicrophoneInterupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
 
-bool AudioMoth_enableMicrophone(uint32_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
+bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 void AudioMoth_disableMicrophone(void);
 
 /* USB */

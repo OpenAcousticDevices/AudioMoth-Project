@@ -50,13 +50,19 @@
 
 /* External microphone power */
 
-#define JCK_GPIOPORT                            gpioPortE
+#define JCK_ENABLE_GPIOPORT                     gpioPortE
 #define JCK_ENABLE_N                            2
+
+#define JCK_ENABLE_ALT_GPIOPORT                 gpioPortC
+#define JCK_ENABLE_ALT_N                        7
 
 /* External microphone sense */
 
 #define JCK_DETECT_GPIOPORT                     gpioPortA
 #define JCK_DETECT                              14
+
+#define JCK_DETECT_ALT_GPIOPORT                 gpioPortD
+#define JCK_DETECT_ALT                          0
 
 /* Version control sense */
 
