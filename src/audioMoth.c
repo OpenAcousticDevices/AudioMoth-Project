@@ -2208,7 +2208,7 @@ void AudioMoth_startRealTimeClock(uint32_t seconds) {
 
     RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
 
-    RTC_CompareSet(0, AM_USB_EM2_RTC_WAKEUP_INTERVAL * AM_LFXO_LFRCO_TICKS_PER_SECOND);
+    RTC_CompareSet(0, seconds * AM_LFXO_LFRCO_TICKS_PER_SECOND);
 
     RTC_IntEnable(RTC_IEN_COMP0);
 
