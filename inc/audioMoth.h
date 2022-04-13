@@ -32,9 +32,11 @@
 #define AM_EXT_BAT_STATE_OFFSET                2400
 #define AM_BATTERY_STATE_INCREMENT             100
 
-/* Gain, switch, frequency and battery state enumerations */
+/* Gain, SD card speed, switch, frequency and battery state enumerations */
 
 typedef enum {AM_LOW_GAIN_RANGE, AM_NORMAL_GAIN_RANGE} AM_gainRange_t;
+
+typedef enum {AM_SD_CARD_NORMAL_SPEED, AM_SD_CARD_HIGH_SPEED} AM_sdCardSpeed_t;
 
 typedef enum {AM_HF_CLK_DIV1, AM_HF_CLK_DIV2, AM_HF_CLK_DIV4} AM_highFrequencyClockDivider_t;
 
@@ -184,9 +186,9 @@ void AudioMoth_delay(uint32_t milliseconds);
 
 /* Sleep and power down */
 
-void AudioMoth_sleep();
-void AudioMoth_deepSleep();
-void AudioMoth_powerDown();
+void AudioMoth_sleep(void);
+void AudioMoth_deepSleep(void);
+void AudioMoth_powerDown(void);
 void AudioMoth_powerDownAndWakeMilliseconds(uint32_t millisecond);
 void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised);
 
@@ -198,8 +200,10 @@ void AudioMoth_setGreenLED(bool state);
 
 /* File system */
 
-bool AudioMoth_enableFileSystem();
-void AudioMoth_disableFileSystem();
+bool AudioMoth_enableFileSystem(AM_sdCardSpeed_t speed);
+void AudioMoth_disableFileSystem(void);
+
+bool AudioMoth_doesFileExist(char *filename);
 
 bool AudioMoth_openFile(char *filename);
 bool AudioMoth_openFileToRead(char *filename);
@@ -209,11 +213,12 @@ bool AudioMoth_appendFile(char *filename);
 bool AudioMoth_seekInFile(uint32_t position);
 bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite);
 
-bool AudioMoth_makeDirectory(char *folderName);
-bool AudioMoth_doesDirectoryExist(char *folderName);
-
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename);
 
+bool AudioMoth_doesDirectoryExist(char *folderName);
+bool AudioMoth_makeDirectory(char *folderName);
+
+bool AudioMoth_syncFile(void);
 bool AudioMoth_closeFile(void);
 
 /* Debugging */

@@ -15,6 +15,13 @@
 *
 ******************************************************************************/
 
+/*******************************************************************************
+* The original version has been modified to include an option to double
+* the speed of the SPI clock when using a fast SD card.
+* openacousticdevices.info
+* March 2022
+*******************************************************************************/
+
 #include "diskio.h"
 #include "microsd.h"
 #include "em_cmu.h"
@@ -27,6 +34,7 @@
 
 /** @cond DO_NOT_INCLUDE_WITH_DOXYGEN */
 static uint32_t timeOut, xfersPrMsec;
+static bool doubleSpiClkFast;
 
 /**************************************************************************//**
  * @brief Wait for micro SD card ready.
@@ -96,6 +104,15 @@ void MICROSD_Deinit(void)
   GPIO_PinModeSet(MICROSD_GPIOPORT, MICROSD_MISOPIN, gpioModeDisabled, 0);  /* MISO */
   GPIO_PinModeSet(MICROSD_GPIOPORT, MICROSD_CSPIN, gpioModeDisabled, 0);    /* CS */
   GPIO_PinModeSet(MICROSD_GPIOPORT, MICROSD_CLKPIN, gpioModeDisabled, 0);   /* Clock */
+}
+
+/**************************************************************************//**
+ * @brief
+ *  Double the fast SPI clock speed.
+ *****************************************************************************/
+void MICROSD_DoubleSpiClkFast(void)
+{
+  doubleSpiClkFast = true;
 }
 
 /**************************************************************************//**
@@ -384,8 +401,9 @@ void MICROSD_SpiClkSlow(void)
  *****************************************************************************/
 void MICROSD_SpiClkFast(void)
 {
-  USART_BaudrateSyncSet(MICROSD_USART, 0, MICROSD_HI_SPI_FREQ);
-  xfersPrMsec = MICROSD_HI_SPI_FREQ / 8000;
+  uint32_t clkSpeed = MICROSD_HI_SPI_FREQ << (doubleSpiClkFast ? 1 : 0);
+  USART_BaudrateSyncSet(MICROSD_USART, 0, clkSpeed);
+  xfersPrMsec = clkSpeed / 8000;
 }
 
 /**************************************************************************//**

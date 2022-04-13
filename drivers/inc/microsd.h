@@ -13,6 +13,13 @@
 *
 ******************************************************************************/
 
+/*******************************************************************************
+* The original version has been modified to include an option to double
+* the speed of the SPI clock when using a fast SD card.
+* openacousticdevices.info
+* March 2022
+*******************************************************************************/
+
 #ifndef __MICROSD_H
 #define __MICROSD_H
 
@@ -57,6 +64,8 @@ extern "C" {
 
 void      MICROSD_Init(void);
 void      MICROSD_Deinit(void);
+
+void      MICROSD_DoubleSpiClkFast(void);
 
 int       MICROSD_Select(void);
 void      MICROSD_Deselect(void);

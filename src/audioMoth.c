@@ -2303,7 +2303,7 @@ void AudioMoth_setGreenLED(bool state) {
 
 /* Functions to handle file system */
 
-bool AudioMoth_enableFileSystem(void) {
+bool AudioMoth_enableFileSystem(AM_sdCardSpeed_t speed) {
 
     /* Check hardware version */
 
@@ -2316,6 +2316,8 @@ bool AudioMoth_enableFileSystem(void) {
     GPIO_PinOutClear(SDEN_GPIOPORT, SD_ENABLE_N);
 
     /* Initialise MicroSD driver */
+
+    if (speed == AM_SD_CARD_HIGH_SPEED) MICROSD_DoubleSpiClkFast();
 
     MICROSD_Init();
 
@@ -2354,6 +2356,18 @@ void AudioMoth_disableFileSystem(void) {
     /* Turn SD card off*/
 
     GPIO_PinOutSet(SDEN_GPIOPORT, SD_ENABLE_N);
+
+}
+
+bool AudioMoth_doesFileExist(char *filename){
+
+    FRESULT res = f_stat(filename, NULL);
+
+    if (res != FR_OK) {
+        return false;
+    }
+
+    return true;
 
 }
 
@@ -2440,18 +2454,6 @@ bool AudioMoth_writeToFile(void *bytes, uint16_t bytesToWrite) {
 
 }
 
-bool AudioMoth_closeFile(void) {
-
-    FRESULT res = f_close(&file);
-
-    if (res != FR_OK) {
-        return false;
-    }
-
-    return true;
-
-}
-
 bool AudioMoth_renameFile(char *originalFilename, char *newFilename) {
 
     FRESULT res = f_rename(originalFilename, newFilename);
@@ -2464,9 +2466,21 @@ bool AudioMoth_renameFile(char *originalFilename, char *newFilename) {
 
 }
 
-bool AudioMoth_makeDirectory(char *folderName) {
+bool AudioMoth_syncFile(void) {
 
-    FRESULT res = f_mkdir(folderName);
+    FRESULT res = f_sync(&file);
+
+    if (res != FR_OK) {
+        return false;
+    }
+
+    return true;
+
+}
+
+bool AudioMoth_closeFile(void) {
+
+    FRESULT res = f_close(&file);
 
     if (res != FR_OK) {
         return false;
@@ -2479,6 +2493,18 @@ bool AudioMoth_makeDirectory(char *folderName) {
 bool AudioMoth_doesDirectoryExist(char *folderName){
 
     FRESULT res = f_stat(folderName, NULL);
+
+    if (res != FR_OK) {
+        return false;
+    }
+
+    return true;
+
+}
+
+bool AudioMoth_makeDirectory(char *folderName) {
+
+    FRESULT res = f_mkdir(folderName);
 
     if (res != FR_OK) {
         return false;
