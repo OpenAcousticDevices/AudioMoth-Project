@@ -49,6 +49,7 @@
 #define AM_MINIMUM_POWER_DOWN_TIME                64
 
 #define MILLISECONDS_IN_SECOND                    1000
+#define SECONDS_IN_MINUTE                         60
 
 /* USB EM2 wake constant */
 
@@ -2190,7 +2191,7 @@ void AudioMoth_stopWatchdog(void) {
 
 /* Real time clock */
 
-void AudioMoth_startRealTimeClock(uint32_t seconds) {
+static void startRealTimeClock(uint32_t ticks) {
 
     /* Check hardware version */
 
@@ -2208,7 +2209,7 @@ void AudioMoth_startRealTimeClock(uint32_t seconds) {
 
     RTC_Init_TypeDef rtcInit = RTC_INIT_DEFAULT;
 
-    RTC_CompareSet(0, seconds * AM_LFXO_LFRCO_TICKS_PER_SECOND);
+    RTC_CompareSet(0, ticks);
 
     RTC_IntEnable(RTC_IEN_COMP0);
 
@@ -2217,6 +2218,30 @@ void AudioMoth_startRealTimeClock(uint32_t seconds) {
     NVIC_EnableIRQ(RTC_IRQn);
 
     RTC_Init(&rtcInit);
+
+}
+
+void AudioMoth_startRealTimeClock(uint32_t seconds) {
+
+    if (seconds == 0) return;
+
+    if (seconds > SECONDS_IN_MINUTE) seconds = SECONDS_IN_MINUTE;
+
+    uint32_t ticks = seconds * AM_LFXO_LFRCO_TICKS_PER_SECOND;
+
+    startRealTimeClock(ticks);
+
+}
+
+void AudioMoth_startRealTimeClockMilliseconds(uint32_t milliseconds) {
+
+    if (milliseconds == 0) return;
+
+    if (milliseconds > MILLISECONDS_IN_SECOND) milliseconds = MILLISECONDS_IN_SECOND;
+
+    uint32_t ticks = ROUNDED_DIV(milliseconds * AM_LFXO_LFRCO_TICKS_PER_SECOND, MILLISECONDS_IN_SECOND);
+
+    startRealTimeClock(ticks);
 
 }
 

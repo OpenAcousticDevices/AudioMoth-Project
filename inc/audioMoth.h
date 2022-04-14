@@ -141,6 +141,7 @@ bool AudioMoth_hasWatchdogResetOccurred(void);
 /* Real time clock */
 
 void AudioMoth_startRealTimeClock(uint32_t seconds);
+void AudioMoth_startRealTimeClockMilliseconds(uint32_t milliseconds);
 void AudioMoth_stopRealTimeClock(void);
 
 void AudioMoth_checkAndHandleTimeOverflow(void);
