@@ -54,6 +54,8 @@ CSIZE = $(TOOLPATH)arm-none-eabi-size
 
 COBJCOPY = $(TOOLPATH)arm-none-eabi-objcopy
 
+COBJDUMP = $(TOOLPATH)arm-none-eabi-objdump
+
 CFLAGS = -mcpu=cortex-m4 -mfloat-abi=hard -mfpu=fpv4-sp-d16 -mthumb -Wall '-DARM_MATH_CM4=1' '-D$(TARGET)=1'
 
 DFLAGS = -MMD
@@ -73,6 +75,8 @@ $(OBJPATH)%.o: %.s
 $(FILENAME).bin: $(OBJ)
 	@echo 'Building' $(FILENAME).axf
 	@$(CC) $(CFLAGS) $(DFLAGS) -T "audiomoth.ld" -Xlinker --gc-sections -Xlinker -Map="$(FILENAME).map" --specs=nano.specs -o $(FILENAME).axf $(OBJ) -lm -Wl,--start-group -lgcc -lc -lnosys -Wl,--end-group
+	@echo 'Building' $(FILENAME).lst
+	@$(COBJDUMP) -d -t -S "$(FILENAME).axf" > "$(FILENAME).lst" 
 	@echo 'Building' $(FILENAME).hex
 	@$(COBJCOPY) -O ihex "$(FILENAME).axf" "$(FILENAME).hex"
 	@echo 'Building' $(FILENAME).bin
@@ -86,6 +90,7 @@ clean:
 	rm -f $(OBJPATH)*.o
 	rm -f $(OBJPATH)*.d
 	rm -f $(FILENAME).axf
+	rm -f $(FILENAME).lst
 	rm -f $(FILENAME).bin
 	rm -f $(FILENAME).hex
 	rm -f $(FILENAME).map
