@@ -8,7 +8,7 @@
 
 TOOLCHAIN_PATH = --- INSERT PATH TO GNU ARM EMBEDDED TOOLCHAIN HERE (e.g. /Library/Toolchains/) ---
 
-TOOLCHAIN_VERSION = gcc-arm-none-eabi-10-2020-q4-major
+TOOLCHAIN_VERSION = gcc-arm-none-eabi-10.3-2021.10
 
 # Determine the path to the toolchain binary
 
