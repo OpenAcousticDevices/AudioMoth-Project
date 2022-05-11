@@ -1087,7 +1087,7 @@ void AudioMoth_deepSleep(void) {
 
 void AudioMoth_powerDown() {
 
-    /* Set up GPIO pins */
+    /* Put GPIO pins in power down state */
 
     setupGPIO();
 
@@ -1095,9 +1095,13 @@ void AudioMoth_powerDown() {
 
     WDOG_Enable(false);
 
-    /* Disable the BURTC */
+    /* Clear BURTC comparison flag */
 
-    BURTC_Enable(false);
+    BURTC_IntClear(BURTC_IF_COMP0);
+
+    /* Disable compare interrupt flag */
+
+    BURTC_IntDisable(BURTC_IF_COMP0);
 
     /* Enter EM4 */
 
