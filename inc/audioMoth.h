@@ -190,7 +190,7 @@ void AudioMoth_delay(uint32_t milliseconds);
 void AudioMoth_sleep(void);
 void AudioMoth_deepSleep(void);
 void AudioMoth_powerDown(void);
-void AudioMoth_powerDownAndWakeMilliseconds(uint32_t millisecond);
+void AudioMoth_powerDownAndWakeMilliseconds(uint32_t milliseconds);
 void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised);
 
 /* LED control */
