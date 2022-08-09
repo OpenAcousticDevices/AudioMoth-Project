@@ -105,10 +105,10 @@ void AudioMoth_disableExternalSRAM(void);
 
 void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 
-void AudioMoth_initialiseMicrophoneInterupts(void);
+void AudioMoth_initialiseMicrophoneInterrupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint16_t numberOfSamples);
 
-bool AudioMoth_enableMicrophone(AM_gainRange_t gainRain, AM_gainSetting_t gain, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
+bool AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_gainSetting_t gainSetting, uint32_t clockDivider, uint32_t acquisitionCycles, uint32_t oversampleRate);
 void AudioMoth_disableMicrophone(void);
 
 /* USB */
@@ -190,7 +190,7 @@ void AudioMoth_delay(uint32_t milliseconds);
 void AudioMoth_sleep(void);
 void AudioMoth_deepSleep(void);
 void AudioMoth_powerDown(void);
-void AudioMoth_powerDownAndWakeMilliseconds(uint32_t milliseconds);
+void AudioMoth_powerDownAndWakeMilliseconds(uint32_t millisecond);
 void AudioMoth_powerDownAndWake(uint32_t seconds, bool synchronised);
 
 /* LED control */

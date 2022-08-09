@@ -597,7 +597,7 @@ void AudioMoth_startMicrophoneSamples(uint32_t sampleRate) {
 
 }
 
-void AudioMoth_initialiseMicrophoneInterupts(void) {
+void AudioMoth_initialiseMicrophoneInterrupts(void) {
 
     /* Enable ADC interrupt vector in NVIC */
 
@@ -855,7 +855,7 @@ static void enablePrsTimer(uint32_t sampleRate) {
 
 }
 
-static void setupOpAmp(AM_gainRange_t gainRain, AM_gainSetting_t gain) {
+static void setupOpAmp(AM_gainRange_t gainRange, AM_gainSetting_t gainSetting) {
 
     /* Check the hardware version */
 
@@ -892,10 +892,10 @@ static void setupOpAmp(AM_gainRange_t gainRain, AM_gainSetting_t gain) {
     static OPAMP_ResSel_TypeDef opamp1LowGainRange[] = {opaResSelR2eq0_33R1, opaResSelR2eq0_33R1, opaResSelR2eqR1, opaResSelR2eqR1, opaResSelR2eqR1};
     static OPAMP_ResSel_TypeDef opamp2LowGainRange[] = {opaResSelR2eqR1, opaResSelR1eq1_67R1, opaResSelR2eqR1, opaResSelR1eq1_67R1, opaResSelR2eq2R1};
 
-    OPAMP_ResSel_TypeDef *opamp1Gain = gainRain == AM_LOW_GAIN_RANGE ? opamp1LowGainRange : opamp1NormalGainRange;
-    OPAMP_ResSel_TypeDef *opamp2Gain = gainRain == AM_LOW_GAIN_RANGE ? opamp2LowGainRange : opamp2NormalGainRange;
+    OPAMP_ResSel_TypeDef *opamp1Gain = gainRange == AM_LOW_GAIN_RANGE ? opamp1LowGainRange : opamp1NormalGainRange;
+    OPAMP_ResSel_TypeDef *opamp2Gain = gainRange == AM_LOW_GAIN_RANGE ? opamp2LowGainRange : opamp2NormalGainRange;
 
-    uint32_t index = MAX(AM_GAIN_LOW, MIN(gain, AM_GAIN_HIGH));
+    uint32_t index = MAX(AM_GAIN_LOW, MIN(gainSetting, AM_GAIN_HIGH));
 
     opa1Init.resSel = opamp1Gain[index];
     opa2Init.resSel = opamp2Gain[index];
@@ -1087,7 +1087,7 @@ void AudioMoth_deepSleep(void) {
 
 void AudioMoth_powerDown() {
 
-    /* Put GPIO pins in power down state */
+    /* Set up GPIO pins */
 
     setupGPIO();
 
@@ -1095,13 +1095,9 @@ void AudioMoth_powerDown() {
 
     WDOG_Enable(false);
 
-    /* Clear BURTC comparison flag */
+    /* Disable the BURTC */
 
-    BURTC_IntClear(BURTC_IF_COMP0);
-
-    /* Disable compare interrupt flag */
-
-    BURTC_IntDisable(BURTC_IF_COMP0);
+    BURTC_Enable(false);
 
     /* Enter EM4 */
 
@@ -2340,7 +2336,7 @@ bool AudioMoth_enableFileSystem(AM_sdCardSpeed_t speed) {
 
     if (hardwareVersion >= AM_VERSION_4) return false;
 
-    /* Turn SD card on*/
+    /* Turn SD card on */
 
     GPIO_PinOutClear(SDEN_GPIOPORT, SD_ENABLE_N);
 
