@@ -432,13 +432,13 @@ void RTC_IRQHandler(void) {
 
     uint32_t interruptMask = RTC_IntGet();
 
+    /* Clear the interrupt  */
+
+    RTC_IntClear(interruptMask);
+
     /* Handle the interrupt */
 
     if (interruptMask & RTC_IFC_COMP0) WDOG_Feed();
-
-    /* Clear interrupt source */
-
-    RTC_IntClear(interruptMask);
 
 }
 
@@ -448,15 +448,15 @@ void GPIO_EVEN_IRQHandler(void) {
 
     uint32_t interruptMask = GPIO_IntGet();
 
-    /* Call the interrupt handler */
+    /* Clear the interrupt */
+
+    GPIO_IntClear(interruptMask);
+
+    /* Handle the interrupt */
 
     if (interruptMask & ((1 << SWITCH_1_SENSE) | (1 << SWITCH_2_SENSE))) AudioMoth_handleSwitchInterrupt();
 
     if (interruptMask & ((1 << JCK_DETECT) | (1 << JCK_DETECT_ALT))) AudioMoth_handleMicrophoneChangeInterrupt();
-
-    /* Clear the GPIO interrupt flag */
-
-    GPIO_IntClear(interruptMask);
 
 }
 
@@ -465,6 +465,10 @@ void ADC0_IRQHandler(void) {
     /* Get the interrupt mask */
 
     uint32_t interruptMask = ADC_IntGet(ADC0);
+    
+    /* Clear the interrupt */
+
+    ADC_IntClear(ADC0, interruptMask);
 
     /* Handle the interrupt */
 
@@ -482,10 +486,6 @@ void ADC0_IRQHandler(void) {
 
     }
 
-    /* Clear the interrupt */
-
-    ADC_IntClear(ADC0, interruptMask);
-
 }
 
 void TIMER1_IRQHandler(void) {
@@ -494,13 +494,13 @@ void TIMER1_IRQHandler(void) {
 
     uint32_t interruptMask = TIMER_IntGet(TIMER1);
 
-    /* Handle the interrupt */
-
-    if (interruptMask & TIMER_IF_OF) delayTimmerRunning = false;
-
     /* Clear the interrupt */
 
     TIMER_IntClear(TIMER1, interruptMask);
+
+    /* Handle the interrupt */
+
+    if (interruptMask & TIMER_IF_OF) delayTimmerRunning = false;
 
 }
 
@@ -2251,7 +2251,11 @@ void AudioMoth_stopRealTimeClock(void) {
 
     AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
 
-    /* Reset RTC */
+    /* Stop RTC interrupts */
+
+    RTC_IntDisable(RTC_IEN_COMP0);
+
+    NVIC_DisableIRQ(RTC_IRQn);
 
     RTC_Reset();
 
