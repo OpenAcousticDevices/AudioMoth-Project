@@ -128,7 +128,7 @@
 
 #define MAX(a, b)                                 ((a) > (b) ? (a) : (b))
 
-#define ROUNDED_DIV(a, b)                         (((a) + (b/2)) / (b))
+#define ROUNDED_DIV(a, b)                         (((a) + ((b)/2)) / (b))
 
 /* Hardware type enumeration */
 
