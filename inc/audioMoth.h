@@ -23,7 +23,7 @@
 #define AM_BACKUP_DOMAIN_SIZE_IN_BYTES         480
 
 #define AM_FLASH_USER_DATA_ADDRESS             0xFE00000
-#define AM_FLASH_USER_SIZE_IN_BYTES            2024
+#define AM_FLASH_USER_SIZE_IN_BYTES            2048
 
 #define AM_UNIQUE_ID_START_ADDRESS             0xFE081F0
 #define AM_UNIQUE_ID_SIZE_IN_BYTES             8
