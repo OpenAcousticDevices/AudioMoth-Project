@@ -6,7 +6,7 @@
 
 #include <stdbool.h>
 
-#include "audioMoth.h"
+#include "audiomoth.h"
 
 /* Firmware version and description */
 
