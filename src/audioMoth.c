@@ -107,8 +107,29 @@
 #define AM_USB_MSG_TYPE_SET_APP_PACKET            0x06
 #define AM_USB_MSG_TYPE_GET_FIRMWARE_VERSION      0x07
 #define AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION  0x08
-#define AM_USB_MSG_TYPE_QUERY_BOOTLOADER          0x09
-#define AM_USB_MSG_TYPE_ENTER_BOOTLOADER          0x0A
+#define AM_USB_MSG_TYPE_QUERY_SERIAL_BOOTLOADER   0x09
+#define AM_USB_MSG_TYPE_ENTER_SERIAL_BOOTLOADER   0x0A
+#define AM_USB_MSG_TYPE_QUERY_USBHID_BOOTLOADER   0x0B
+#define AM_USB_MSG_TYPE_ENTER_USBHID_BOOTLOADER   0x0C
+
+/* USB HID bootloader commands */
+
+#define AM_BOOTLOADER_GET_VERSION                 0x01
+#define AM_BOOTLOADER_INITIALISE_SRAM             0x02
+#define AM_BOOTLOADER_CLEAR_USER_PAGE             0x03
+#define AM_BOOTLOADER_SET_SRAM_FIRMWARE_PACKET    0x04
+#define AM_BOOTLOADER_CALC_SRAM_FIRMWARE_CRC      0x05
+#define AM_BOOTLOADER_CALC_FLASH_FIRMWARE_CRC     0x06
+#define AM_BOOTLOADER_GET_FIRMWARE_CRC            0x07
+#define AM_BOOTLOADER_FLASH_FIRMWARE              0x08
+
+/* USB HID bootloader constants */
+
+#define FIRMWARE_CRC_POLY                         0x1021
+
+#define AM_FIRMWARE_START_ADDRESS                 (16 * 1024)
+#define AM_FIRMWARE_PAGE_SIZE                     (2 * 1024)
+#define AM_FIRMWARE_TOTAL_SIZE                    ((256 * 1024) - AM_FIRMWARE_START_ADDRESS)
 
 /* Define WebUSB constants */
 
@@ -134,6 +155,17 @@
 
 typedef enum {AM_VERSION_1, AM_VERSION_2, AM_VERSION_3, AM_VERSION_4} AM_hardwareVersion_t;
 
+/* USB HID bootloader firmware packet structure */
+
+#pragma pack(push, 1)
+
+typedef struct {
+    uint32_t offset;
+    uint8_t length;
+} usbMessageSetFirmwarePacket_t;
+
+#pragma pack(pop)
+
 /* USB buffers */
 
 STATIC_UBUF(receiveBuffer, 2 * AM_USB_BUFFERSIZE);
@@ -154,9 +186,19 @@ static uint16_t numberOfSamplesPerTransfer;
 
 static volatile bool delayTimmerRunning;
 
-/* USB boot loader variable */
+/* USB bootloader variables */
 
-static volatile bool enterBootloader;
+static volatile uint16_t currentCRC;
+
+static volatile uint8_t* firmwareStartAddress;
+
+static volatile bool shouldCalculateCRC;
+
+static volatile bool completedCalculateCRC;
+
+static volatile bool enterSerialBootloader;
+
+static volatile bool shouldFlashFirmware;
 
 /* Function prototypes */
 
@@ -1289,6 +1331,116 @@ int setupCmd(const USB_Setup_TypeDef *setup) {
 
 }
 
+/* CRC update function */
+
+static inline uint16_t updateCRC(uint16_t crc, uint32_t incr) {
+
+    uint16_t xor = crc >> 15;
+
+    uint16_t out = crc << 1;
+
+    if (incr) out++;
+
+    if (xor) out ^= FIRMWARE_CRC_POLY;
+
+    return out;
+
+}
+
+/* Function held in SRAM to clear user flash page */
+
+SL_RAMFUNC_DEFINITION_BEGIN
+static void __attribute__ ((noinline)) clearUserDataPageInFlash() {
+
+    /* Unlock the internal flash for erasing and writing */
+
+    MSC->LOCK = MSC_UNLOCK_CODE;
+
+    MSC->WRITECTRL |= MSC_WRITECTRL_WREN;
+
+    /* Erase the internal flash page */
+
+    MSC->ADDRB = AM_FLASH_USER_DATA_ADDRESS;
+
+    MSC->WRITECMD = MSC_WRITECMD_LADDRIM;
+
+    MSC->WRITECMD = MSC_WRITECMD_ERASEPAGE;
+
+    while (MSC->STATUS & MSC_STATUS_BUSY);
+
+    /* Write the internal flash page */
+
+    for (uint32_t j = 0; j < AM_FIRMWARE_PAGE_SIZE; j += 4) {
+
+        MSC->WDATA = 0x00;
+
+        MSC->WRITECMD = MSC_WRITECMD_WRITEONCE;
+
+        while (MSC->STATUS & MSC_STATUS_BUSY);
+
+    }
+
+    /* Lock the internal flash */
+
+    MSC->WRITECTRL &= ~MSC_WRITECTRL_WREN;
+
+    MSC->LOCK = 0;
+
+}
+SL_RAMFUNC_DEFINITION_END
+
+/* Function held in SRAM to write firmware to internal flash */
+
+SL_RAMFUNC_DEFINITION_BEGIN
+static void __attribute__ ((noinline)) writeFirmwareToInternalFlash() {
+
+    /* Unlock the internal flash for erasing and writing */
+
+    MSC->LOCK = MSC_UNLOCK_CODE;
+
+    MSC->WRITECTRL |= MSC_WRITECTRL_WREN;
+
+    /* Iterate through firmware pages */
+
+    for (uint32_t i = 0; i < AM_FIRMWARE_TOTAL_SIZE; i += AM_FIRMWARE_PAGE_SIZE) {
+
+        /* Erase the internal flash page */
+
+        MSC->ADDRB = AM_FIRMWARE_START_ADDRESS + i;
+
+        MSC->WRITECMD = MSC_WRITECMD_LADDRIM;
+
+        MSC->WRITECMD = MSC_WRITECMD_ERASEPAGE;
+
+        while (MSC->STATUS & MSC_STATUS_BUSY);
+
+        /* Write the internal flash page */
+
+        for (uint32_t j = 0; j < AM_FIRMWARE_PAGE_SIZE; j += 4) {
+
+            MSC->WDATA = *(uint32_t*)(AM_EXTERNAL_SRAM_START_ADDRESS + i + j);
+
+            MSC->WRITECMD = MSC_WRITECMD_WRITEONCE;
+
+            while (MSC->STATUS & MSC_STATUS_BUSY);
+
+        }
+
+    }
+
+    /* Lock the internal flash */
+
+    MSC->WRITECTRL &= ~MSC_WRITECTRL_WREN;
+
+    MSC->LOCK = 0;
+
+    /* Reset to start the new firmware */
+
+    NVIC_SystemReset();
+
+}
+SL_RAMFUNC_DEFINITION_END
+
 /* Callback on receipt of message from the USB host */
 
 void handleUSBPacket() {
@@ -1303,39 +1455,31 @@ void handleUSBPacket() {
 
     /* Respond to message type */
 
-    uint32_t timeNow;
-
-    uint32_t supplyVoltage;
-
-    uint8_t *firmwareNumber;
-
-    uint8_t *firmwareDescription;
-
-    AM_batteryState_t batteryState;
-
     switch(receivedMessageType) {
 
-        case AM_USB_MSG_TYPE_GET_TIME:
+        case AM_USB_MSG_TYPE_GET_TIME: {
 
             /* Requests the current time from the device */
 
-            AudioMoth_getTime(&timeNow, NULL);
+            uint32_t time;
 
-            memcpy(transmitBuffer + 1, &timeNow, 4);
+            AudioMoth_getTime(&time, NULL);
 
-            break;
+            *(uint32_t*)(transmitBuffer + 1) = time;
 
-        case AM_USB_MSG_TYPE_SET_TIME:
+            } break;
+
+        case AM_USB_MSG_TYPE_SET_TIME: {
 
             /* Provides the time to set the device RTC */
 
-            memcpy(&timeNow, receiveBuffer + 1, 4);
+            uint32_t time = *(uint32_t*)(receiveBuffer + 1);
 
-            memcpy(transmitBuffer + 1, &timeNow, 4);
+            *(uint32_t*)(transmitBuffer + 1) = time;
 
-            AudioMoth_setTime(timeNow, 0);
+            AudioMoth_setTime(time, 0);
 
-            break;
+            } break;
 
         case AM_USB_MSG_TYPE_GET_UID:
 
@@ -1345,17 +1489,17 @@ void handleUSBPacket() {
 
             break;
 
-        case AM_USB_MSG_TYPE_GET_BATTERY:
+        case AM_USB_MSG_TYPE_GET_BATTERY: {
 
             /* Requests the state of the battery */
 
-            supplyVoltage = AudioMoth_getSupplyVoltage();
+            uint32_t supplyVoltage = AudioMoth_getSupplyVoltage();
 
-            batteryState = AudioMoth_getBatteryState(supplyVoltage);
+            AM_batteryState_t batteryState = AudioMoth_getBatteryState(supplyVoltage);
 
-            memcpy(transmitBuffer + 1, &batteryState, 1);
+            *(AM_batteryState_t*)(transmitBuffer + 1) = batteryState;
 
-            break;
+            } break;
 
         case AM_USB_MSG_TYPE_GET_APP_PACKET:
 
@@ -1373,56 +1517,179 @@ void handleUSBPacket() {
 
             break;
 
-        case AM_USB_MSG_TYPE_GET_FIRMWARE_VERSION:
+        case AM_USB_MSG_TYPE_GET_FIRMWARE_VERSION: {
 
             /* Provides the application firmware version */
 
-            firmwareNumber = NULL;
+            uint8_t *firmwareNumber = NULL;
 
             AudioMoth_usbFirmwareVersionRequested(&firmwareNumber);
 
-            if (firmwareNumber != NULL) {
+            if (firmwareNumber) memcpy(transmitBuffer + 1, firmwareNumber, AM_FIRMWARE_VERSION_LENGTH);
 
-                memcpy(transmitBuffer + 1, firmwareNumber, AM_FIRMWARE_VERSION_LENGTH);
+            } break;
 
-            }
-
-            break;
-
-        case AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION:
+        case AM_USB_MSG_TYPE_GET_FIRMWARE_DESCRIPTION: {
 
             /* Provides the application firmware description */
 
-            firmwareDescription = NULL;
+            uint8_t *firmwareDescription = NULL;
 
             AudioMoth_usbFirmwareDescriptionRequested(&firmwareDescription);
 
-            if (firmwareDescription != NULL) {
+            if (firmwareDescription) memcpy(transmitBuffer + 1, firmwareDescription, AM_FIRMWARE_DESCRIPTION_LENGTH);
 
-                memcpy(transmitBuffer + 1, firmwareDescription, AM_FIRMWARE_DESCRIPTION_LENGTH);
+            } break;
+
+        case AM_USB_MSG_TYPE_QUERY_SERIAL_BOOTLOADER:
+
+            /* Query support for automatic bootloader entry */
+
+            transmitBuffer[1] = true;
+
+            break;
+
+        case AM_USB_MSG_TYPE_ENTER_SERIAL_BOOTLOADER:
+
+            /* Enter bootloader after sending response */
+
+            enterSerialBootloader = true;
+
+            transmitBuffer[1] = true;
+
+            break;
+
+        case AM_USB_MSG_TYPE_QUERY_USBHID_BOOTLOADER: {
+
+            /* Query support for USB HID bootloader */
+
+            AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+            transmitBuffer[1] = hardwareVersion < AM_VERSION_4;
+
+            } break;
+
+        case AM_USB_MSG_TYPE_ENTER_USBHID_BOOTLOADER: {
+
+            /* Check support for USB HID bootloader */
+
+            AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+            if (hardwareVersion >= AM_VERSION_4) break;
+
+            /* Handle USB HID bootloader message */
+
+            uint8_t bootloaderMessageType = receiveBuffer[1];
+
+            transmitBuffer[1] = bootloaderMessageType;
+
+            /* Respond to message type */
+
+            switch(bootloaderMessageType) {
+
+                case AM_BOOTLOADER_GET_VERSION:
+
+                    transmitBuffer[2] = 0x01;
+
+                    break;
+
+                case AM_BOOTLOADER_INITIALISE_SRAM: {
+
+                    /* Enable the external SRAM */
+
+                    bool success = AudioMoth_enableExternalSRAM();
+
+                    /* Erase SRAM buffer */
+
+                    if (success) {
+
+                        uint8_t *buffer = (uint8_t*)AM_EXTERNAL_SRAM_START_ADDRESS;
+
+                        memset(buffer, 0xFF, AM_FIRMWARE_TOTAL_SIZE);
+
+                        transmitBuffer[2] = true;
+
+                    }
+
+                    } break;
+
+                case AM_BOOTLOADER_CLEAR_USER_PAGE: {
+
+                    /* Clear SRAM buffer */
+
+                    clearUserDataPageInFlash();
+
+                    /* Check the page contents */
+
+                    bool success = true;
+
+                    for (uint32_t i = 0; i < AM_FLASH_USER_SIZE_IN_BYTES; i += 1) {
+
+                        uint8_t byte = *(uint8_t*)(AM_FLASH_USER_DATA_ADDRESS + i);
+
+                        success &= byte == 0x00;
+
+                    }
+
+                    transmitBuffer[2] = success;
+
+                    } break;
+
+                case AM_BOOTLOADER_SET_SRAM_FIRMWARE_PACKET: {
+
+                    /* Copy firmware bytes to SRAM buffer */
+
+                    uint8_t *buffer = (uint8_t*)AM_EXTERNAL_SRAM_START_ADDRESS;
+
+                    usbMessageSetFirmwarePacket_t *msg = (usbMessageSetFirmwarePacket_t*)(receiveBuffer + 2);
+
+                    if (msg->offset + msg->length < AM_FIRMWARE_TOTAL_SIZE) memcpy(buffer + msg->offset, receiveBuffer + sizeof(usbMessageSetFirmwarePacket_t) + 2, msg->length);
+
+                    memcpy(transmitBuffer + 2, receiveBuffer + 2, msg->length + sizeof(usbMessageSetFirmwarePacket_t));
+
+                    } break;
+
+                case AM_BOOTLOADER_CALC_SRAM_FIRMWARE_CRC:
+                case AM_BOOTLOADER_CALC_FLASH_FIRMWARE_CRC:
+
+                    if (shouldCalculateCRC) break;
+
+                    firmwareStartAddress = bootloaderMessageType == AM_BOOTLOADER_CALC_SRAM_FIRMWARE_CRC ? (uint8_t*)AM_EXTERNAL_SRAM_START_ADDRESS : (uint8_t*)AM_FIRMWARE_START_ADDRESS;
+
+                    completedCalculateCRC = false;
+
+                    shouldCalculateCRC = true;
+
+                    break;
+
+                case AM_BOOTLOADER_GET_FIRMWARE_CRC: {
+
+                    /* Return the CRC value of the firmware */
+
+                    transmitBuffer[2] = completedCalculateCRC;
+
+                    if (completedCalculateCRC) *(uint16_t*)(transmitBuffer + 3) = currentCRC;
+
+                    } break;
+
+                case AM_BOOTLOADER_FLASH_FIRMWARE:
+
+                    /* Flash firmware after sending response */
+
+                    shouldFlashFirmware = true;
+
+                    transmitBuffer[2] = true;
+
+                    break;
+
+                default:
+
+                    break;
 
             }
 
-            break;
-
-        case AM_USB_MSG_TYPE_QUERY_BOOTLOADER:
-
-            /* Query support for automatic boot loader */
-
-            transmitBuffer[1] = 0x01;
-
-            break;
-
-        case AM_USB_MSG_TYPE_ENTER_BOOTLOADER:
-
-            /* Enters boot loader after sending response */
-
-            enterBootloader = true;
-
-            transmitBuffer[1] = 0x01;
-
-            break;
-
+        } break;
+        
         default:
 
             break;
@@ -1501,25 +1768,47 @@ void AudioMoth_handleUSB(void) {
 
     /* Stay within this busy loop while the switch is in USB */
 
-    while (AudioMoth_getSwitchPosition() == AM_SWITCH_USB && !enterBootloader) {
+    while (AudioMoth_getSwitchPosition() == AM_SWITCH_USB && !enterSerialBootloader && !shouldFlashFirmware) {
 
-        /* Light LED to indicate activity */
+        /* Turn LED on to indicate activity */
 
         if (GPIO_PinInGet(USB_DATA_GPIOPORT, USB_P)) {
-
+            
             AudioMoth_setGreenLED(true);
 
             AudioMoth_delay(1);
 
-            AudioMoth_setGreenLED(false);
+        }
 
-            AudioMoth_delay(1);
+        /* Calcualte CRC */
+
+        if (shouldCalculateCRC) {
+
+            currentCRC = 0;
+            
+            for (uint32_t i = 0; i < AM_FIRMWARE_TOTAL_SIZE; i += 1) {
+
+                uint32_t byte = firmwareStartAddress[i];
+
+                for (uint32_t j = 0x80; j > 0; j >>= 1) currentCRC = updateCRC(currentCRC, byte & j);
+
+            }
+
+            for (uint32_t j = 0; j < 16; j += 1) currentCRC = updateCRC(currentCRC, 0);
+
+            completedCalculateCRC = true;
+
+            shouldCalculateCRC = false;
 
         }
 
         /* Handle BURTC overflow */
 
         AudioMoth_checkAndHandleTimeOverflow();
+
+        /* Turn LED off */
+
+        if (GPIO_PinInGet(USB_DATA_GPIOPORT, USB_P)) AudioMoth_setGreenLED(false);
 
         /* Enter low power standby if USB is unplugged */
 
@@ -1551,31 +1840,31 @@ void AudioMoth_handleUSB(void) {
 
     GPIO_PinModeSet(USB_DATA_GPIOPORT, USB_P, gpioModeDisabled, 0);   
 
-    /* Jump directly to the boot loader */
+    /* Jump directly to the serial bootloader */
 
-    if (enterBootloader) {
+    if (enterSerialBootloader) {
 
         /* Disable watch dog timer */
 
         WDOG_Enable(false);
 
-        /* Pull boot loader pin high */
+        /* Pull bootloader pin high */
 
         GPIO->ROUTE &= ~GPIO_ROUTE_SWCLKPEN;
 
         GPIO_PinModeSet(gpioPortF, 0, gpioModePushPull, 1);
 
-        /* Jump to boot loader */
+        /* Jump to bootloader */
 
         __asm (
 
-            /* Define the boot loader and vector table addresses */
+            /* Define the bootloader and vector table addresses */
 
             ".equ BOOTLOADER_ADDRESS, 0x00000000\n\t"
 
             ".equ SCB_VTOR, (0xE000E000 + 0x0D00 + 0x008)\n\t"
 
-            /* Load the boot loader address */
+            /* Load the bootloader address */
 
             "ldr r0, =BOOTLOADER_ADDRESS\n\t"
 
@@ -1590,12 +1879,22 @@ void AudioMoth_handleUSB(void) {
             "msr msp, r1\n\t"
             "msr psp, r1\n\t"
 
-            /* Jump into the boot loader */
+            /* Jump into the bootloader */
 
             "ldr r1, [r0, #4]\n\t"
             "mov pc, r1\n\t"
 
         );
+
+    }
+
+    /* Flash the firmware from the external SRAM */
+
+    if (shouldFlashFirmware) {
+
+        AudioMoth_setBothLED(true);
+
+        writeFirmwareToInternalFlash();
 
     }
 
