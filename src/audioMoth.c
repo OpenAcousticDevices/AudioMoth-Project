@@ -1770,8 +1770,8 @@ void AudioMoth_handleUSB(void) {
 
     while (AudioMoth_getSwitchPosition() == AM_SWITCH_USB && !enterSerialBootloader && !shouldFlashFirmware) {
 
-        /* Turn LED on to indicate activity */
-
+        /* Turn green LED on to indicate activity */
+	    
         if (GPIO_PinInGet(USB_DATA_GPIOPORT, USB_P)) {
             
             AudioMoth_setGreenLED(true);
@@ -1806,9 +1806,9 @@ void AudioMoth_handleUSB(void) {
 
         AudioMoth_checkAndHandleTimeOverflow();
 
-        /* Turn LED off */
+        /* Turn off green LED */
 
-        if (GPIO_PinInGet(USB_DATA_GPIOPORT, USB_P)) AudioMoth_setGreenLED(false);
+        AudioMoth_setGreenLED(false);
 
         /* Enter low power standby if USB is unplugged */
 
