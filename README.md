@@ -3,7 +3,7 @@ A minimal project on which all AudioMoth firmware can be built.
 
 ### Usage ###
 
-When run, this implementation will flash an LED and handle USB interactions to enable communication with the [AudioMoth Time App](https://github.com/OpenAcousticDevices/AudioMoth-Time-App).
+When run, this implementation will flash an LED and handle USB interactions to enable communication with the [AudioMoth Time App](https://github.com/OpenAcousticDevices/AudioMoth-Time-App) and the [AudioMoth Flash App](https://github.com/OpenAcousticDevices/AudioMoth-Flash-App).
 
 ### Documentation ###
 
