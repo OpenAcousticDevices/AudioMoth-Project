@@ -40,7 +40,7 @@
 #include "usbcallbacks.h"
 #include "usbdescriptors.h"
 
-#include "audioMoth.h"
+#include "audiomoth.h"
 
 /* Time constants */
 
