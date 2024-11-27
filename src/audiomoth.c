@@ -828,7 +828,15 @@ void AudioMoth_disableMicrophone(void) {
     /* Disable VREF power */
 
     if (hardwareVersion < AM_VERSION_4) GPIO_PinOutClear(VREF_GPIOPORT, VREF_ENABLE);
+	
+    /* Disable OPA1 and OPA2 */
+	
+    CMU_ClockEnable(cmuClock_DAC0, true);
 
+    OPAMP_Disable(DAC0, OPA1);
+
+    OPAMP_Disable(DAC0, OPA2);
+	
     /* Stop the clocks */
 
     CMU_ClockEnable(cmuClock_DAC0, false);
