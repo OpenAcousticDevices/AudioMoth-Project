@@ -37,6 +37,7 @@
 
 #include "pinouts.h"
 #include "usbconfig.h"
+#include "usbmacros.h"
 #include "usbcallbacks.h"
 #include "usbdescriptors.h"
 
@@ -157,6 +158,8 @@
 
 #define ROUNDED_DIV(a, b)                         (((a) + ((b)/2)) / (b))
 
+#define SIGNED_ROUNDED_DIV(a, b)                  ((a) < 0 ? (((a) - (b/2)) / (b)) : (((a) + (b/2)) / (b)))
+
 /* Hardware type enumeration */
 
 typedef enum {AM_VERSION_1, AM_VERSION_2, AM_VERSION_3, AM_VERSION_4} AM_hardwareVersion_t;
@@ -175,6 +178,7 @@ typedef struct {
 /* USB buffers */
 
 STATIC_UBUF(receiveBuffer, 2 * AM_USB_BUFFERSIZE);
+
 STATIC_UBUF(transmitBuffer, 2 * AM_USB_BUFFERSIZE);
 
 /* SD card variables */
@@ -210,7 +214,9 @@ static volatile bool enterSerialBootloader;
 
 static volatile bool shouldFlashFirmware;
 
-/* External microphone variable */
+/* External microphone variables */
+
+static bool microphoneEnabled;
 
 static bool ignoreExternalMicrophone;
 
@@ -733,6 +739,62 @@ void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *sec
 
 }
 
+bool AudioMoth_isExternalMicrophonePresent() {
+
+    AM_hardwareVersion_t hardwareVersion = BURTC_RetRegGet(AM_BURTC_HARDWARE_VERSION);
+
+    if (hardwareVersion == AM_VERSION_1) return false;
+
+    /* Enable jack detect if necessary */
+
+    if (microphoneEnabled == false || (microphoneEnabled == true && ignoreExternalMicrophone == true)) {
+
+        if (hardwareVersion >= AM_VERSION_4) {
+
+            GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeInput, true);
+
+        } else {
+
+            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeInput, true);
+
+        }
+
+    }
+
+    /* Check if the externl microphone is present */
+
+    bool externalMicrophonePresent;
+
+    if (hardwareVersion >= AM_VERSION_4) {
+
+        externalMicrophonePresent = GPIO_PinInGet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT) == 0;
+
+    } else {
+
+        externalMicrophonePresent = GPIO_PinInGet(JCK_DETECT_GPIOPORT, JCK_DETECT) == 0;
+
+    }
+
+    /* Disable jack detect if necessary */
+
+    if (microphoneEnabled == false || (microphoneEnabled == true && ignoreExternalMicrophone == true)) {
+
+        if (hardwareVersion >= AM_VERSION_4) {
+
+            GPIO_PinModeSet(JCK_DETECT_ALT_GPIOPORT, JCK_DETECT_ALT, gpioModeDisabled, false);
+
+        } else {
+
+            GPIO_PinModeSet(JCK_DETECT_GPIOPORT, JCK_DETECT, gpioModeDisabled, false);
+
+        }
+
+    }
+
+    return externalMicrophonePresent;
+
+}
+
 void AudioMoth_ignoreExternalMicrophone(bool state) {
 
     ignoreExternalMicrophone = state;
@@ -813,12 +875,12 @@ AM_externalMicrophone_t AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_
 
     /* Enable external and internal microphone power as appropriate */
 
-	if (hardwareVersion == AM_VERSION_1) {
+    if (hardwareVersion == AM_VERSION_1) {
 
         GPIO_PinOutClear(VMIC_GPIOPORT, VMIC_ENABLE_N);
 
     }
-	
+
     if (hardwareVersion == AM_VERSION_2) {
 
         if (externalMicrophonePresent) {
@@ -866,6 +928,10 @@ AM_externalMicrophone_t AudioMoth_enableMicrophone(AM_gainRange_t gainRange, AM_
     setupOpAmp(gainRange, gain);
 
     setupADC(clockDivider, acquisitionCycles, oversampleRate);
+
+    /* Set flag */
+
+    microphoneEnabled = true;
 
     /* Return appropriate enum */
 
@@ -940,6 +1006,10 @@ void AudioMoth_disableMicrophone(void) {
     CMU_ClockEnable(cmuClock_DAC0, false);
     CMU_ClockEnable(cmuClock_ADC0, false);
     CMU_ClockEnable(cmuClock_DMA, false);
+
+    /* Reset flag */
+
+    microphoneEnabled = false;
 
 }
 
@@ -1920,6 +1990,16 @@ void AudioMoth_handleUSB(void) {
 
     AudioMoth_startRealTimeClock(AM_USB_EM2_RTC_WAKEUP_INTERVAL);
 
+    /* Update serial number for device unique ID */
+
+    char *serialNumber = (char*)&iSerialNumber.name;
+
+    uint32_t length = sprintf(serialNumber, AM_SERIAL_NUMBER, AM_FORMAT_SERIAL_NUMBER(AM_UNIQUE_ID_START_ADDRESS));
+
+    char16_t *dst = (char16_t*)serialNumber;
+
+    for (uint32_t i = 0; i < length; i += 1) dst[length - 1 - i] = serialNumber[length - 1 - i];
+
     /* Enable the USB interface */
 
     USBD_Init(&initstruct);
@@ -2453,7 +2533,7 @@ int32_t AudioMoth_getTemperature() {
 
     int32_t temperature = MILLIDEGREES_IN_DEGREE * CAL_TEMP_0;
 
-    temperature += ROUNDED_DIV(MILLIDEGREES_IN_DEGREE * GRADIENT_MULTIPLIER * (ADC0_TEMP_0_READ_1V25 - adcSample), TEMPERATURE_GRADIENT);
+    temperature += SIGNED_ROUNDED_DIV(MILLIDEGREES_IN_DEGREE * GRADIENT_MULTIPLIER * (ADC0_TEMP_0_READ_1V25 - adcSample), TEMPERATURE_GRADIENT);
 
     return temperature;
 
@@ -2924,6 +3004,10 @@ bool AudioMoth_enableFileSystem(AM_sdCardSpeed_t speed) {
     /* Turn SD card on */
 
     GPIO_PinOutClear(SDEN_GPIOPORT, SD_ENABLE_N);
+
+    /* Pause after power on */
+
+    AudioMoth_delay(10);
 
     /* Initialise MicroSD driver */
 

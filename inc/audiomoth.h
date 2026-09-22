@@ -32,6 +32,12 @@
 #define AM_EXT_BAT_STATE_OFFSET                2400
 #define AM_BATTERY_STATE_INCREMENT             100
 
+/* AudioMoth macros */
+
+#define AM_SERIAL_NUMBER                        "%08X%08X"
+
+#define AM_FORMAT_SERIAL_NUMBER(src)            (unsigned int)*((uint32_t*)src + 1),  (unsigned int)*((uint32_t*)src)
+
 /* Gain, SD card speed, switch, frequency and battery state enumerations */
 
 typedef enum {AM_LOW_GAIN_RANGE, AM_NORMAL_GAIN_RANGE} AM_gainRange_t;
@@ -110,6 +116,7 @@ void AudioMoth_startMicrophoneSamples(uint32_t sampleRate);
 void AudioMoth_initialiseMicrophoneInterrupts(void);
 void AudioMoth_initialiseDirectMemoryAccess(int16_t *primaryBuffer, int16_t *secondaryBuffer, uint32_t numberOfSamples);
 
+bool AudioMoth_isExternalMicrophonePresent(void);
 void AudioMoth_ignoreExternalMicrophone(bool state);
 bool AudioMoth_isIgnoreExternalMicrophoneSupported(void);
 

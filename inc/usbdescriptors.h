@@ -7,8 +7,8 @@
 #ifndef __USBDESCRIPTORS_H
 #define __USBDESCRIPTORS_H
 
-#define USB_EP0_SIZE 64
-#define USB_MAX_EP_SIZE 64
+#define USB_EP0_SIZE                        64
+#define USB_MAX_EP_SIZE                     64
 
 /* HID Report Descriptor */
 
@@ -239,8 +239,7 @@ static const uint8_t configDesc[] __attribute__ ((aligned(4)))= {
     0x01,                                 /* bConfigurationValue                 */
     0x00,                                 /* iConfiguration                      */
     CONFIG_DESC_BM_RESERVED_D7 |          /* bmAttrib                            */
-    CONFIG_DESC_BM_SELFPOWERED |
-    CONFIG_DESC_BM_REMOTEWAKEUP,
+    CONFIG_DESC_BM_SELFPOWERED,
     CONFIG_DESC_MAXPOWER_mA(100),         /* bMaxPower: 100 mA                   */
 
     /* Interface descriptor */
@@ -329,7 +328,7 @@ STATIC_CONST_STRING_DESC(iManufacturer, 'o', 'p', 'e', 'n', 'a', 'c', 'o', 'u', 
 
 STATIC_CONST_STRING_DESC(iProduct, 'A','u','d','i','o','M','o','t','h');
 
-STATIC_CONST_STRING_DESC(iSerialNumber, '0', '1','0','0');
+STATIC_MUTABLE_STRING_DESC(iSerialNumber, '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0', '0');
 
 /* End-point buffer sizes */
 
@@ -343,7 +342,7 @@ static const uint8_t bufferingMultiplier[NUM_EP_USED + 1] = {
 
 /* Define string array */
 
-static const void * const strings[] = {
+static const void* const strings[] = {
     &langID,
     &iManufacturer,
     &iProduct,
