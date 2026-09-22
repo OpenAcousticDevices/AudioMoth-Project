@@ -199,7 +199,7 @@ DRESULT disk_ioctl (
     case GET_SECTOR_COUNT :         /* Get number of sectors on the disk (WORD) */
       if ((MICROSD_SendCmd(CMD9, 0) == 0) && MICROSD_BlockRx(csd, 16)) {
         if ((csd[0] >> 6) == 1) {                     /* SDv2? */
-          csize = csd[9] + ((WORD)csd[8] << 8) + 1;
+          csize = csd[9] + ((WORD)csd[8] << 8) + ((DWORD)(csd[7] & 63) << 16) + 1;
           *(DWORD*)buff = (DWORD)csize << 10;
         } else {                                      /* SDv1 or MMCv2 */
           n = (csd[5] & 15) + ((csd[10] & 128) >> 7) + ((csd[9] & 3) << 1) + 2;
@@ -262,10 +262,10 @@ DRESULT disk_ioctl (
       }
       break;
 
-    case MMC_GET_SDSTAT :           /* Receive SD statsu as a data block (64 bytes) */
+    case MMC_GET_SDSTAT :           /* Receive SD status as a data block (64 bytes) */
       if (MICROSD_SendCmd(ACMD13, 0) == 0) {    /* SD_STATUS */
         MICROSD_XferSpi(0xff);
-        if (MICROSD_BlockTx(buff, 64))
+        if (MICROSD_BlockRx(buff, 64))
           res = RES_OK;
       }
       break;
